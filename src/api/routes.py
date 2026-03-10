@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
@@ -198,28 +198,45 @@ def trigger_emails(db: Session = Depends(get_db)):
     return {"message": "Email job completed"}
 
 
-@router.post("/scrape")
-async def trigger_scrape(db: Session = Depends(get_db)):
-    """Manually trigger a scrape of all sources."""
+def _run_scrape():
+    """Run scrape in background thread so it doesn't block the server."""
+    import asyncio
+    import logging
+
+    from src.db.database import SessionLocal
     from src.scrapers.capitol_trades import scrape_capitol_trades
+    from src.scrapers.finnhub import scrape_finnhub_congress
     from src.scrapers.house import scrape_house_disclosures
     from src.scrapers.senate import scrape_senate_disclosures
-    from src.scrapers.finnhub import scrape_finnhub_congress
     from src.services.trade_service import ingest_trades
 
-    capitol_trades = await scrape_capitol_trades(max_pages=30)
-    house_trades = await scrape_house_disclosures()
-    senate_trades = await scrape_senate_disclosures()
-    finnhub_trades = await scrape_finnhub_congress()
+    logger = logging.getLogger(__name__)
+    logger.info("Background scrape started")
 
-    all_trades = capitol_trades + house_trades + senate_trades + finnhub_trades
-    new_count = ingest_trades(db, all_trades)
+    db = SessionLocal()
+    try:
+        loop = asyncio.new_event_loop()
+        capitol_trades = loop.run_until_complete(scrape_capitol_trades(max_pages=30))
+        house_trades = loop.run_until_complete(scrape_house_disclosures())
+        senate_trades = loop.run_until_complete(scrape_senate_disclosures())
+        finnhub_trades = loop.run_until_complete(scrape_finnhub_congress())
+        loop.close()
 
-    return {
-        "message": f"Scrape complete. {new_count} new trades ingested.",
-        "capitol_trades_scraped": len(capitol_trades),
-        "house_scraped": len(house_trades),
-        "senate_scraped": len(senate_trades),
-        "finnhub_scraped": len(finnhub_trades),
-        "new_trades": new_count,
-    }
+        all_trades = capitol_trades + house_trades + senate_trades + finnhub_trades
+        new_count = ingest_trades(db, all_trades)
+        logger.info(
+            f"Background scrape complete: {new_count} new trades "
+            f"(capitol={len(capitol_trades)}, house={len(house_trades)}, "
+            f"senate={len(senate_trades)}, finnhub={len(finnhub_trades)})"
+        )
+    except Exception as e:
+        logger.error(f"Background scrape failed: {e}")
+    finally:
+        db.close()
+
+
+@router.post("/scrape")
+def trigger_scrape(background_tasks: BackgroundTasks):
+    """Manually trigger a scrape of all sources (runs in background)."""
+    background_tasks.add_task(_run_scrape)
+    return {"message": "Scrape started in background. Check logs for progress."}
