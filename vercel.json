@@ -5,20 +5,10 @@
       "use": "@vercel/python"
     }
   ],
-  "rewrites": [
+  "routes": [
     {
-      "source": "/(.*)",
-      "destination": "/api/index"
-    }
-  ],
-  "crons": [
-    {
-      "path": "/api/scrape",
-      "schedule": "0 6 * * *"
-    },
-    {
-      "path": "/api/send-emails",
-      "schedule": "0 13 * * *"
+      "src": "/(.*)",
+      "dest": "/api/index"
     }
   ]
 }
