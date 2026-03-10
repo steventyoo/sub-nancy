@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 
 from src.db.database import get_db
 from src.db.models import Member, Subscriber, Trade
@@ -199,6 +199,278 @@ def list_members(chamber: str | None = None, db: Session = Depends(get_db)):
     if chamber:
         query = query.filter(Member.chamber == chamber)
     return query.order_by(Member.name).all()
+
+
+@router.get("/dashboard")
+def dashboard_stats(db: Session = Depends(get_db)):
+    """Dashboard summary: top tickers, most active members, buy/sell ratio, recent activity."""
+    from datetime import timedelta
+
+    now = datetime.utcnow()
+    thirty_days_ago = now - timedelta(days=30)
+    seven_days_ago = now - timedelta(days=7)
+
+    # Total counts
+    total_trades = db.query(Trade).count()
+    total_members = db.query(Member).count()
+
+    # Buy/sell ratio
+    buy_count = db.query(Trade).filter(Trade.transaction_type.ilike("%purchase%")).count()
+    sell_count = db.query(Trade).filter(Trade.transaction_type.ilike("%sale%")).count()
+
+    # Top 10 tickers by trade count (last 30 days)
+    top_tickers = (
+        db.query(
+            Trade.ticker,
+            func.count(Trade.id).label("trade_count"),
+            func.sum(case((Trade.transaction_type.ilike("%purchase%"), 1), else_=0)).label("buys"),
+            func.sum(case((Trade.transaction_type.ilike("%sale%"), 1), else_=0)).label("sells"),
+            func.avg(Trade.amount_low).label("avg_amount"),
+        )
+        .filter(Trade.ticker.isnot(None), Trade.ticker != "")
+        .filter(Trade.transaction_date >= thirty_days_ago)
+        .group_by(Trade.ticker)
+        .order_by(func.count(Trade.id).desc())
+        .limit(10)
+        .all()
+    )
+
+    # Most active members (last 30 days)
+    top_members = (
+        db.query(
+            Member.name,
+            Member.chamber,
+            Member.party,
+            func.count(Trade.id).label("trade_count"),
+            func.sum(case((Trade.transaction_type.ilike("%purchase%"), 1), else_=0)).label("buys"),
+            func.sum(case((Trade.transaction_type.ilike("%sale%"), 1), else_=0)).label("sells"),
+        )
+        .join(Trade)
+        .filter(Trade.transaction_date >= thirty_days_ago)
+        .group_by(Member.name, Member.chamber, Member.party)
+        .order_by(func.count(Trade.id).desc())
+        .limit(10)
+        .all()
+    )
+
+    # Trades this week vs last week
+    trades_this_week = db.query(Trade).filter(Trade.transaction_date >= seven_days_ago).count()
+    trades_last_week = (
+        db.query(Trade)
+        .filter(Trade.transaction_date >= seven_days_ago - timedelta(days=7))
+        .filter(Trade.transaction_date < seven_days_ago)
+        .count()
+    )
+
+    return {
+        "total_trades": total_trades,
+        "total_members": total_members,
+        "buy_count": buy_count,
+        "sell_count": sell_count,
+        "trades_this_week": trades_this_week,
+        "trades_last_week": trades_last_week,
+        "top_tickers": [
+            {
+                "ticker": r.ticker,
+                "trade_count": r.trade_count,
+                "buys": r.buys or 0,
+                "sells": r.sells or 0,
+                "avg_amount": round(r.avg_amount) if r.avg_amount else None,
+            }
+            for r in top_tickers
+        ],
+        "top_members": [
+            {
+                "name": r.name,
+                "chamber": r.chamber,
+                "party": r.party or "N/A",
+                "trade_count": r.trade_count,
+                "buys": r.buys or 0,
+                "sells": r.sells or 0,
+            }
+            for r in top_members
+        ],
+    }
+
+
+@router.get("/leaderboard")
+def leaderboard(
+    period: str = "all",
+    chamber: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Politician leaderboard ranked by trade count and volume."""
+    from datetime import timedelta
+
+    query = (
+        db.query(
+            Member.name,
+            Member.chamber,
+            Member.party,
+            Member.state,
+            func.count(Trade.id).label("trade_count"),
+            func.sum(case((Trade.transaction_type.ilike("%purchase%"), 1), else_=0)).label("buys"),
+            func.sum(case((Trade.transaction_type.ilike("%sale%"), 1), else_=0)).label("sells"),
+            func.sum(Trade.amount_low).label("total_volume"),
+            func.max(Trade.transaction_date).label("last_trade_date"),
+        )
+        .join(Trade)
+    )
+
+    if period == "30d":
+        query = query.filter(Trade.transaction_date >= datetime.utcnow() - timedelta(days=30))
+    elif period == "90d":
+        query = query.filter(Trade.transaction_date >= datetime.utcnow() - timedelta(days=90))
+    elif period == "1y":
+        query = query.filter(Trade.transaction_date >= datetime.utcnow() - timedelta(days=365))
+
+    if chamber:
+        query = query.filter(Member.chamber == chamber)
+
+    rows = (
+        query
+        .group_by(Member.name, Member.chamber, Member.party, Member.state)
+        .order_by(func.count(Trade.id).desc())
+        .limit(50)
+        .all()
+    )
+
+    return [
+        {
+            "rank": i + 1,
+            "name": r.name,
+            "chamber": r.chamber,
+            "party": r.party or "N/A",
+            "state": r.state or "N/A",
+            "trade_count": r.trade_count,
+            "buys": r.buys or 0,
+            "sells": r.sells or 0,
+            "total_volume": round(r.total_volume) if r.total_volume else 0,
+            "last_trade_date": r.last_trade_date.isoformat() if r.last_trade_date else None,
+        }
+        for i, r in enumerate(rows)
+    ]
+
+
+@router.get("/members/{member_name}/profile")
+def member_profile(member_name: str, db: Session = Depends(get_db)):
+    """Individual politician profile with trade history and stats."""
+    member = db.query(Member).filter(Member.name == member_name).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    trades = (
+        db.query(Trade)
+        .filter(Trade.member_id == member.id)
+        .order_by(Trade.transaction_date.desc().nullslast())
+        .all()
+    )
+
+    # Stats
+    buy_count = sum(1 for t in trades if t.transaction_type and "purchase" in t.transaction_type.lower())
+    sell_count = sum(1 for t in trades if t.transaction_type and "sale" in t.transaction_type.lower())
+    total_volume = sum(t.amount_low or 0 for t in trades)
+
+    # Top tickers by count
+    ticker_counts: dict[str, int] = {}
+    for t in trades:
+        if t.ticker:
+            ticker_counts[t.ticker] = ticker_counts.get(t.ticker, 0) + 1
+    top_tickers = sorted(ticker_counts.items(), key=lambda x: -x[1])[:10]
+
+    # Sector breakdown
+    sector_counts: dict[str, int] = {}
+    for t in trades:
+        s = t.sector or "Unknown"
+        sector_counts[s] = sector_counts.get(s, 0) + 1
+    sectors = sorted(sector_counts.items(), key=lambda x: -x[1])
+
+    return {
+        "name": member.name,
+        "chamber": member.chamber,
+        "party": member.party or "N/A",
+        "state": member.state or "N/A",
+        "total_trades": len(trades),
+        "buys": buy_count,
+        "sells": sell_count,
+        "total_volume": round(total_volume),
+        "top_tickers": [{"ticker": t, "count": c} for t, c in top_tickers],
+        "sectors": [{"sector": s, "count": c} for s, c in sectors],
+        "trades": [
+            TradeOut(
+                id=t.id,
+                member_name=member.name,
+                chamber=member.chamber,
+                transaction_date=t.transaction_date,
+                filing_date=t.filing_date,
+                ticker=t.ticker,
+                asset_description=t.asset_description,
+                transaction_type=t.transaction_type,
+                amount_low=t.amount_low,
+                amount_high=t.amount_high,
+                owner=t.owner,
+                sector=t.sector,
+                industry=t.industry,
+            ).model_dump()
+            for t in trades[:100]
+        ],
+    }
+
+
+@router.get("/screener")
+def stock_screener(
+    period: str = "30d",
+    min_trades: int = 2,
+    db: Session = Depends(get_db),
+):
+    """Stock screener: most-traded tickers by congress with buy/sell signals."""
+    from datetime import timedelta
+
+    if period == "7d":
+        cutoff = datetime.utcnow() - timedelta(days=7)
+    elif period == "30d":
+        cutoff = datetime.utcnow() - timedelta(days=30)
+    elif period == "90d":
+        cutoff = datetime.utcnow() - timedelta(days=90)
+    elif period == "1y":
+        cutoff = datetime.utcnow() - timedelta(days=365)
+    else:
+        cutoff = datetime.utcnow() - timedelta(days=30)
+
+    rows = (
+        db.query(
+            Trade.ticker,
+            Trade.sector,
+            func.count(Trade.id).label("trade_count"),
+            func.count(func.distinct(Trade.member_id)).label("unique_members"),
+            func.sum(case((Trade.transaction_type.ilike("%purchase%"), 1), else_=0)).label("buys"),
+            func.sum(case((Trade.transaction_type.ilike("%sale%"), 1), else_=0)).label("sells"),
+            func.sum(Trade.amount_low).label("total_volume"),
+            func.max(Trade.transaction_date).label("last_trade_date"),
+        )
+        .filter(Trade.ticker.isnot(None), Trade.ticker != "")
+        .filter(Trade.transaction_date >= cutoff)
+        .group_by(Trade.ticker, Trade.sector)
+        .having(func.count(Trade.id) >= min_trades)
+        .order_by(func.count(func.distinct(Trade.member_id)).desc(), func.count(Trade.id).desc())
+        .limit(50)
+        .all()
+    )
+
+    return [
+        {
+            "ticker": r.ticker,
+            "sector": r.sector or "N/A",
+            "trade_count": r.trade_count,
+            "unique_members": r.unique_members,
+            "buys": r.buys or 0,
+            "sells": r.sells or 0,
+            "signal": "BUY" if (r.buys or 0) > (r.sells or 0) else "SELL" if (r.sells or 0) > (r.buys or 0) else "MIXED",
+            "total_volume": round(r.total_volume) if r.total_volume else 0,
+            "last_trade_date": r.last_trade_date.isoformat() if r.last_trade_date else None,
+        }
+        for r in rows
+    ]
 
 
 @router.post("/subscribe")

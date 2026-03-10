@@ -405,6 +405,59 @@ DASHBOARD_HTML = """
     letter-spacing: 0.5px;
     margin-left: 8px;
   }
+
+  /* STAT CARDS */
+  .stat-card {
+    background: var(--cream-light);
+    border: 2px solid var(--cream);
+    padding: 20px 24px;
+    text-align: center;
+  }
+  .stat-value {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--black);
+    margin-bottom: 4px;
+  }
+  .stat-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--gray);
+  }
+
+  /* SIGNAL BADGES */
+  .signal-buy { background: #e8f5e9; color: var(--green); border: 1px solid #c8e6c9; padding: 3px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+  .signal-sell { background: #fce4ec; color: var(--red); border: 1px solid #f8bbd0; padding: 3px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+  .signal-mixed { background: var(--cream-light); color: var(--gray); border: 1px solid var(--border); padding: 3px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+
+  /* BAR CHART */
+  .bar-row { display: flex; align-items: center; margin-bottom: 6px; gap: 8px; }
+  .bar-label { font-family: 'IBM Plex Mono', monospace; font-size: 12px; width: 80px; text-align: right; flex-shrink: 0; }
+  .bar-track { flex: 1; height: 24px; background: var(--cream-light); border: 1px solid var(--border); position: relative; }
+  .bar-fill { height: 100%; transition: width 0.5s; }
+  .bar-count { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--gray); width: 40px; flex-shrink: 0; }
+
+  /* PROFILE */
+  .profile-header { display: flex; align-items: center; gap: 24px; margin-bottom: 32px; padding-bottom: 20px; border-bottom: 2px solid var(--cream); }
+  .profile-name { font-family: 'IBM Plex Mono', monospace; font-size: 24px; font-weight: 700; }
+  .profile-meta { font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: var(--gray); }
+  .profile-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 32px; }
+
+  /* CLICKABLE MEMBER */
+  .member-link { cursor: pointer; text-decoration: underline; text-decoration-color: var(--cream-dark); text-underline-offset: 2px; }
+  .member-link:hover { text-decoration-color: var(--black); }
+
+  /* RESPONSIVE */
+  @media (max-width: 768px) {
+    .stat-card { padding: 14px; }
+    .stat-value { font-size: 20px; }
+    #dash-stats { grid-template-columns: repeat(2, 1fr) !important; }
+    .profile-stats { grid-template-columns: repeat(2, 1fr); }
+    .nav-tab { padding: 10px 14px; font-size: 11px; letter-spacing: 0.5px; }
+  }
 </style>
 </head>
 <body>
@@ -415,7 +468,10 @@ DASHBOARD_HTML = """
 </div>
 
 <div class="nav-bar">
-  <div class="nav-tab active" onclick="showTab('recent')">Recent</div>
+  <div class="nav-tab active" onclick="showTab('dashboard')">Dashboard</div>
+  <div class="nav-tab" onclick="showTab('recent')">Recent</div>
+  <div class="nav-tab" onclick="showTab('leaderboard')">Leaderboard</div>
+  <div class="nav-tab" onclick="showTab('screener')">Screener</div>
   <div class="nav-tab" onclick="showTab('query')">Query</div>
   <div class="nav-tab" onclick="showTab('browse')">Browse</div>
   <div class="nav-tab" onclick="showTab('subscribe')">Alerts</div>
@@ -423,8 +479,72 @@ DASHBOARD_HTML = """
 
 <div class="container">
 
+  <!-- DASHBOARD TAB -->
+  <div id="tab-dashboard">
+    <div class="section-title">Market Overview <span id="dash-badge" class="count-badge" style="display:none"></span></div>
+    <div id="dash-stats" class="stats-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:32px">
+      <div class="stat-card"><div class="stat-value" id="ds-total">-</div><div class="stat-label">Total Trades</div></div>
+      <div class="stat-card"><div class="stat-value" id="ds-members">-</div><div class="stat-label">Members Tracked</div></div>
+      <div class="stat-card"><div class="stat-value" style="color:var(--green)" id="ds-buys">-</div><div class="stat-label">Purchases</div></div>
+      <div class="stat-card"><div class="stat-value" style="color:var(--red)" id="ds-sells">-</div><div class="stat-label">Sales</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px">
+      <div>
+        <div class="section-title">Top Tickers (30 Days)</div>
+        <div id="dash-tickers"><div class="loading"><span class="spinner"></span> Loading...</div></div>
+      </div>
+      <div>
+        <div class="section-title">Most Active Members (30 Days)</div>
+        <div id="dash-members"><div class="loading"><span class="spinner"></span> Loading...</div></div>
+      </div>
+    </div>
+    <div style="margin-top:32px">
+      <div class="section-title">Weekly Activity</div>
+      <div id="dash-activity" style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--gray)"></div>
+    </div>
+  </div>
+
+  <!-- MEMBER PROFILE VIEW (hidden by default) -->
+  <div id="tab-profile" style="display:none">
+    <div style="margin-bottom:16px"><a href="#" onclick="backFromProfile();return false" style="font-family:'IBM Plex Mono',monospace;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--gray)">&larr; Back</a></div>
+    <div id="profile-content"><div class="loading"><span class="spinner"></span> Loading profile...</div></div>
+  </div>
+
+  <!-- LEADERBOARD TAB -->
+  <div id="tab-leaderboard" style="display:none">
+    <div class="section-title">Politician Leaderboard</div>
+    <div class="filters" style="margin-bottom:20px">
+      <select class="filter-select" id="lb-period" onchange="loadLeaderboard()">
+        <option value="all">All Time</option>
+        <option value="30d">Last 30 Days</option>
+        <option value="90d">Last 90 Days</option>
+        <option value="1y">Last Year</option>
+      </select>
+      <select class="filter-select" id="lb-chamber" onchange="loadLeaderboard()">
+        <option value="">All Chambers</option>
+        <option value="House">House</option>
+        <option value="Senate">Senate</option>
+      </select>
+    </div>
+    <div id="leaderboard-results"><div class="loading"><span class="spinner"></span> Loading leaderboard...</div></div>
+  </div>
+
+  <!-- SCREENER TAB -->
+  <div id="tab-screener" style="display:none">
+    <div class="section-title">Congressional Stock Screener</div>
+    <div class="filters" style="margin-bottom:20px">
+      <select class="filter-select" id="sc-period" onchange="loadScreener()">
+        <option value="7d">Last 7 Days</option>
+        <option value="30d" selected>Last 30 Days</option>
+        <option value="90d">Last 90 Days</option>
+        <option value="1y">Last Year</option>
+      </select>
+    </div>
+    <div id="screener-results"><div class="loading"><span class="spinner"></span> Loading screener...</div></div>
+  </div>
+
   <!-- RECENT TRADES TAB -->
-  <div id="tab-recent">
+  <div id="tab-recent" style="display:none">
     <div class="section-title">Latest Congressional Trades <span id="stats-badge" class="count-badge" style="display:none"></span></div>
     <div class="filters" style="margin-bottom:20px">
       <select class="filter-select" id="r-member" onchange="filterRecent()" style="min-width:200px">
@@ -512,14 +632,34 @@ DASHBOARD_HTML = """
 </div>
 
 <script>
-const TABS = ['recent','query','browse','subscribe'];
+const TABS = ['dashboard','recent','leaderboard','screener','query','browse','subscribe'];
+let _previousTab = 'dashboard';
 function showTab(name) {
+  _previousTab = name;
   document.querySelectorAll('.nav-tab').forEach((t,i) => {
     t.classList.toggle('active', TABS[i] === name);
   });
   TABS.forEach(n => {
     document.getElementById('tab-'+n).style.display = n === name ? 'block' : 'none';
   });
+  document.getElementById('tab-profile').style.display = 'none';
+  // Lazy-load data
+  if (name === 'dashboard' && !window._dashLoaded) { loadDashboard(); window._dashLoaded = true; }
+  if (name === 'recent' && !window._recentLoaded) { loadDropdowns(); loadRecent(); window._recentLoaded = true; }
+  if (name === 'leaderboard' && !window._lbLoaded) { loadLeaderboard(); window._lbLoaded = true; }
+  if (name === 'screener' && !window._scLoaded) { loadScreener(); window._scLoaded = true; }
+}
+
+function showProfile(memberName) {
+  TABS.forEach(n => { document.getElementById('tab-'+n).style.display = 'none'; });
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-profile').style.display = 'block';
+  loadMemberProfile(memberName);
+}
+
+function backFromProfile() {
+  document.getElementById('tab-profile').style.display = 'none';
+  showTab(_previousTab);
 }
 
 // Load dropdowns and recent trades on page load
@@ -594,7 +734,7 @@ function clearFilters() {
   loadRecent();
 }
 
-document.addEventListener('DOMContentLoaded', () => { loadDropdowns(); loadRecent(); });
+document.addEventListener('DOMContentLoaded', () => { loadDashboard(); window._dashLoaded = true; });
 
 function setQ(q) {
   document.getElementById('question').value = q;
@@ -712,7 +852,7 @@ function renderTradeTable(trades) {
     const amt = t.amount_low ? ('$' + t.amount_low.toLocaleString() + (t.amount_high ? ' - $' + t.amount_high.toLocaleString() : '+')) : 'N/A';
     const date = t.transaction_date ? t.transaction_date.split('T')[0] : 'N/A';
     h += '<tr>';
-    h += '<td><strong>' + escapeHtml(t.member_name) + '</strong></td>';
+    h += '<td><strong class="member-link" onclick="showProfile(\\'' + escapeHtml(t.member_name) + '\\')">' + escapeHtml(t.member_name) + '</strong></td>';
     h += '<td><span class="badge ' + badge + '">' + escapeHtml(type) + '</span></td>';
     h += '<td><strong>' + escapeHtml(t.ticker || 'N/A') + '</strong></td>';
     h += '<td>' + escapeHtml((t.asset_description || '').substring(0, 40)) + '</td>';
@@ -723,6 +863,202 @@ function renderTradeTable(trades) {
   });
   h += '</tbody></table></div>';
   return h;
+}
+
+// ---- DASHBOARD ----
+async function loadDashboard() {
+  try {
+    const resp = await fetch('/api/dashboard');
+    const d = await resp.json();
+    document.getElementById('ds-total').textContent = d.total_trades.toLocaleString();
+    document.getElementById('ds-members').textContent = d.total_members.toLocaleString();
+    document.getElementById('ds-buys').textContent = d.buy_count.toLocaleString();
+    document.getElementById('ds-sells').textContent = d.sell_count.toLocaleString();
+    const badge = document.getElementById('dash-badge');
+    badge.textContent = d.total_trades.toLocaleString() + ' Trades';
+    badge.style.display = 'inline-block';
+    document.getElementById('footer-count').textContent = d.total_trades.toLocaleString() + ' Trades';
+
+    // Top tickers bar chart
+    const maxTk = d.top_tickers.length ? Math.max(...d.top_tickers.map(t => t.trade_count)) : 1;
+    let tkHtml = '<div style="margin-top:8px">';
+    d.top_tickers.forEach(t => {
+      const pct = Math.round(t.trade_count / maxTk * 100);
+      const buyPct = t.trade_count > 0 ? Math.round(t.buys / t.trade_count * 100) : 0;
+      tkHtml += '<div class="bar-row">';
+      tkHtml += '<div class="bar-label"><strong class="member-link" onclick="showScreenerTicker(\\''+escapeHtml(t.ticker)+'\\')">'+escapeHtml(t.ticker)+'</strong></div>';
+      tkHtml += '<div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:linear-gradient(90deg,var(--green) '+buyPct+'%,var(--red) '+buyPct+'%)"></div></div>';
+      tkHtml += '<div class="bar-count">'+t.trade_count+'</div>';
+      tkHtml += '</div>';
+    });
+    tkHtml += '</div>';
+    document.getElementById('dash-tickers').innerHTML = d.top_tickers.length ? tkHtml : '<div class="empty">No trades in last 30 days</div>';
+
+    // Top members
+    const maxMb = d.top_members.length ? Math.max(...d.top_members.map(m => m.trade_count)) : 1;
+    let mbHtml = '<div style="margin-top:8px">';
+    d.top_members.forEach(m => {
+      const pct = Math.round(m.trade_count / maxMb * 100);
+      const partyColor = m.party === 'Republican' ? '#c0392b' : m.party === 'Democrat' ? '#2980b9' : 'var(--gray)';
+      mbHtml += '<div class="bar-row">';
+      mbHtml += '<div class="bar-label"><strong class="member-link" onclick="showProfile(\\''+escapeHtml(m.name)+'\\')">'+escapeHtml(m.name.split(' ').pop())+'</strong></div>';
+      mbHtml += '<div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+partyColor+'"></div></div>';
+      mbHtml += '<div class="bar-count">'+m.trade_count+'</div>';
+      mbHtml += '</div>';
+    });
+    mbHtml += '</div>';
+    document.getElementById('dash-members').innerHTML = d.top_members.length ? mbHtml : '<div class="empty">No activity in last 30 days</div>';
+
+    // Weekly activity
+    const wkChange = d.trades_this_week - d.trades_last_week;
+    const wkArrow = wkChange >= 0 ? '&#9650;' : '&#9660;';
+    const wkColor = wkChange >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('dash-activity').innerHTML =
+      '<span style="font-size:20px;font-weight:700">'+d.trades_this_week+'</span> trades this week ' +
+      '<span style="color:'+wkColor+'">'+wkArrow+' '+Math.abs(wkChange)+' vs last week ('+d.trades_last_week+')</span>';
+  } catch(e) {
+    document.getElementById('dash-tickers').innerHTML = '<div class="answer" style="border-left-color:var(--red)">Failed to load dashboard: ' + e.message + '</div>';
+  }
+}
+
+function showScreenerTicker(ticker) {
+  showTab('screener');
+}
+
+// ---- LEADERBOARD ----
+async function loadLeaderboard() {
+  const period = document.getElementById('lb-period').value;
+  const chamber = document.getElementById('lb-chamber').value;
+  const params = new URLSearchParams();
+  params.set('period', period);
+  if (chamber) params.set('chamber', chamber);
+  const res = document.getElementById('leaderboard-results');
+  res.innerHTML = '<div class="loading"><span class="spinner"></span> Loading leaderboard...</div>';
+  try {
+    const resp = await fetch('/api/leaderboard?' + params.toString());
+    const rows = await resp.json();
+    if (!rows.length) { res.innerHTML = '<div class="empty">No data for this period</div>'; return; }
+    let h = '<div style="overflow-x:auto"><table class="trades-table"><thead><tr>';
+    h += '<th>#</th><th>Member</th><th>Chamber</th><th>Party</th><th>State</th><th>Trades</th><th>Buys</th><th>Sells</th><th>Est. Volume</th><th>Last Trade</th>';
+    h += '</tr></thead><tbody>';
+    rows.forEach(r => {
+      const partyBg = r.party === 'Republican' ? '#fce4ec' : r.party === 'Democrat' ? '#e3f2fd' : 'var(--cream-light)';
+      const partyColor = r.party === 'Republican' ? '#c0392b' : r.party === 'Democrat' ? '#2980b9' : 'var(--gray)';
+      h += '<tr>';
+      h += '<td style="font-weight:700;color:var(--gray)">'+r.rank+'</td>';
+      h += '<td><strong class="member-link" onclick="showProfile(\\''+escapeHtml(r.name)+'\\')">'+escapeHtml(r.name)+'</strong></td>';
+      h += '<td>'+escapeHtml(r.chamber)+'</td>';
+      h += '<td><span style="background:'+partyBg+';color:'+partyColor+';padding:2px 8px;font-size:11px;font-family:IBM Plex Mono,monospace;font-weight:600">'+escapeHtml(r.party)+'</span></td>';
+      h += '<td>'+escapeHtml(r.state)+'</td>';
+      h += '<td><strong>'+r.trade_count+'</strong></td>';
+      h += '<td style="color:var(--green)">'+r.buys+'</td>';
+      h += '<td style="color:var(--red)">'+r.sells+'</td>';
+      h += '<td>$'+r.total_volume.toLocaleString()+'</td>';
+      h += '<td>'+(r.last_trade_date ? r.last_trade_date.split('T')[0] : 'N/A')+'</td>';
+      h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+    res.innerHTML = '<div style="margin-bottom:12px"><span class="count-badge">'+rows.length+' Members</span></div>' + h;
+  } catch(e) {
+    res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Error: ' + e.message + '</div>';
+  }
+}
+
+// ---- MEMBER PROFILE ----
+async function loadMemberProfile(name) {
+  const res = document.getElementById('profile-content');
+  res.innerHTML = '<div class="loading"><span class="spinner"></span> Loading profile...</div>';
+  try {
+    const resp = await fetch('/api/members/' + encodeURIComponent(name) + '/profile');
+    const p = await resp.json();
+    if (resp.status === 404) { res.innerHTML = '<div class="empty">Member not found</div>'; return; }
+
+    const partyColor = p.party === 'Republican' ? '#c0392b' : p.party === 'Democrat' ? '#2980b9' : 'var(--gray)';
+
+    let h = '<div class="profile-header">';
+    h += '<div><div class="profile-name">'+escapeHtml(p.name)+'</div>';
+    h += '<div class="profile-meta"><span style="color:'+partyColor+';font-weight:600">'+escapeHtml(p.party)+'</span> &middot; '+escapeHtml(p.chamber)+' &middot; '+escapeHtml(p.state)+'</div>';
+    h += '</div></div>';
+
+    h += '<div class="profile-stats">';
+    h += '<div class="stat-card"><div class="stat-value">'+p.total_trades+'</div><div class="stat-label">Total Trades</div></div>';
+    h += '<div class="stat-card"><div class="stat-value" style="color:var(--green)">'+p.buys+'</div><div class="stat-label">Purchases</div></div>';
+    h += '<div class="stat-card"><div class="stat-value" style="color:var(--red)">'+p.sells+'</div><div class="stat-label">Sales</div></div>';
+    h += '<div class="stat-card"><div class="stat-value">$'+p.total_volume.toLocaleString()+'</div><div class="stat-label">Est. Volume</div></div>';
+    h += '</div>';
+
+    // Top tickers + sectors side by side
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-bottom:32px">';
+
+    // Top tickers
+    h += '<div><div class="section-title">Top Tickers</div>';
+    if (p.top_tickers.length) {
+      const maxTk = Math.max(...p.top_tickers.map(t => t.count));
+      p.top_tickers.forEach(t => {
+        const pct = Math.round(t.count / maxTk * 100);
+        h += '<div class="bar-row"><div class="bar-label"><strong>'+escapeHtml(t.ticker)+'</strong></div>';
+        h += '<div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:var(--black)"></div></div>';
+        h += '<div class="bar-count">'+t.count+'</div></div>';
+      });
+    } else { h += '<div class="empty">No ticker data</div>'; }
+    h += '</div>';
+
+    // Sectors
+    h += '<div><div class="section-title">Sector Breakdown</div>';
+    if (p.sectors.length) {
+      const maxSc = Math.max(...p.sectors.map(s => s.count));
+      p.sectors.slice(0, 8).forEach(s => {
+        const pct = Math.round(s.count / maxSc * 100);
+        h += '<div class="bar-row"><div class="bar-label" style="width:100px">'+escapeHtml(s.sector.substring(0,12))+'</div>';
+        h += '<div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:var(--cream-dark)"></div></div>';
+        h += '<div class="bar-count">'+s.count+'</div></div>';
+      });
+    } else { h += '<div class="empty">No sector data</div>'; }
+    h += '</div></div>';
+
+    // Recent trades
+    h += '<div class="section-title">Trade History</div>';
+    if (p.trades.length) {
+      h += renderTradeTable(p.trades);
+    } else { h += '<div class="empty">No trades found</div>'; }
+
+    res.innerHTML = h;
+  } catch(e) {
+    res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Error: ' + e.message + '</div>';
+  }
+}
+
+// ---- SCREENER ----
+async function loadScreener() {
+  const period = document.getElementById('sc-period').value;
+  const res = document.getElementById('screener-results');
+  res.innerHTML = '<div class="loading"><span class="spinner"></span> Loading screener...</div>';
+  try {
+    const resp = await fetch('/api/screener?period=' + period);
+    const rows = await resp.json();
+    if (!rows.length) { res.innerHTML = '<div class="empty">No data for this period</div>'; return; }
+    let h = '<div style="overflow-x:auto"><table class="trades-table"><thead><tr>';
+    h += '<th>Ticker</th><th>Sector</th><th>Signal</th><th>Trades</th><th>Members</th><th>Buys</th><th>Sells</th><th>Est. Volume</th><th>Last Trade</th>';
+    h += '</tr></thead><tbody>';
+    rows.forEach(r => {
+      const sigClass = r.signal === 'BUY' ? 'signal-buy' : r.signal === 'SELL' ? 'signal-sell' : 'signal-mixed';
+      h += '<tr>';
+      h += '<td><strong>'+escapeHtml(r.ticker)+'</strong></td>';
+      h += '<td>'+escapeHtml(r.sector)+'</td>';
+      h += '<td><span class="'+sigClass+'">'+r.signal+'</span></td>';
+      h += '<td><strong>'+r.trade_count+'</strong></td>';
+      h += '<td>'+r.unique_members+'</td>';
+      h += '<td style="color:var(--green)">'+r.buys+'</td>';
+      h += '<td style="color:var(--red)">'+r.sells+'</td>';
+      h += '<td>$'+r.total_volume.toLocaleString()+'</td>';
+      h += '<td>'+(r.last_trade_date ? r.last_trade_date.split('T')[0] : 'N/A')+'</td>';
+      h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+    res.innerHTML = '<div style="margin-bottom:12px"><span class="count-badge">'+rows.length+' Stocks</span></div>' + h;
+  } catch(e) {
+    res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Error: ' + e.message + '</div>';
+  }
 }
 
 function formatMarkdown(text) {
