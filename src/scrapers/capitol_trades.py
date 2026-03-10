@@ -1,7 +1,8 @@
 """Scraper for Capitol Trades (capitoltrades.com).
 
 Fetches recent congressional stock trades from both House and Senate.
-Data is embedded as JSON in server-rendered Next.js pages.
+Data is embedded as JSON in React Server Component (RSC) flight data
+within the Next.js App Router HTML response.
 """
 
 import json
@@ -15,41 +16,54 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.capitoltrades.com/trades"
 
-# Capitol Trades amount ranges to numeric values
-AMOUNT_MAP = {
-    "$1K–$15K": (1001, 15000),
-    "$15K–$50K": (15001, 50000),
-    "$50K–$100K": (50001, 100000),
-    "$100K–$250K": (100001, 250000),
-    "$250K–$500K": (250001, 500000),
-    "$500K–$1M": (500001, 1000000),
-    "$1M–$5M": (1000001, 5000000),
-    "$5M–$25M": (5000001, 25000000),
-    "$25M–$50M": (25000001, 50000000),
-    "$50M+": (50000001, None),
-}
+# Capitol Trades "value" field is now a numeric dollar amount.
+# We map it to amount_low/amount_high range buckets for consistency.
+AMOUNT_BUCKETS = [
+    (1001, 15000),
+    (15001, 50000),
+    (50001, 100000),
+    (100001, 250000),
+    (250001, 500000),
+    (500001, 1000000),
+    (1000001, 5000000),
+    (5000001, 25000000),
+    (25000001, 50000000),
+]
 
 
-def parse_amount(value_str: str) -> tuple[float | None, float | None]:
-    """Parse Capitol Trades amount range string to numeric low/high."""
-    if not value_str:
+def parse_amount(value) -> tuple[float | None, float | None]:
+    """Parse Capitol Trades value to amount_low/amount_high.
+
+    The new API returns a numeric dollar value (e.g., 8000).
+    We bucket it into our standard ranges.
+    """
+    if value is None:
         return None, None
-    for label, (low, high) in AMOUNT_MAP.items():
-        if label in value_str:
-            return low, high
-    # Try to parse as a direct range like "$1,001 - $15,000"
-    nums = re.findall(r'[\d,]+', value_str)
-    if len(nums) >= 2:
-        try:
-            return float(nums[0].replace(",", "")), float(nums[1].replace(",", ""))
-        except ValueError:
-            pass
-    elif len(nums) == 1:
-        try:
-            v = float(nums[0].replace(",", ""))
-            return v, v
-        except ValueError:
-            pass
+
+    # Handle numeric values (new format)
+    if isinstance(value, (int, float)):
+        v = float(value)
+        for low, high in AMOUNT_BUCKETS:
+            if v <= high:
+                return float(low), float(high)
+        # Above $50M
+        return 50000001.0, None
+
+    # Handle string values (legacy format)
+    if isinstance(value, str):
+        nums = re.findall(r'[\d,]+', value)
+        if len(nums) >= 2:
+            try:
+                return float(nums[0].replace(",", "")), float(nums[1].replace(",", ""))
+            except ValueError:
+                pass
+        elif len(nums) == 1:
+            try:
+                v = float(nums[0].replace(",", ""))
+                return v, v
+            except ValueError:
+                pass
+
     return None, None
 
 
@@ -76,7 +90,7 @@ def normalize_owner(owner: str) -> str | None:
     if not owner:
         return None
     o = owner.lower().strip()
-    if o in ("self", "self"):
+    if o in ("self",):
         return "Self"
     elif "spouse" in o:
         return "Spouse"
@@ -99,133 +113,164 @@ def normalize_chamber(chamber: str) -> str:
     return "Senate"
 
 
+def clean_ticker(ticker_str: str | None) -> str | None:
+    """Clean ticker symbol — remove exchange suffix like ':US'."""
+    if not ticker_str or ticker_str == "--":
+        return None
+    # Remove exchange suffix (e.g., "GOOGL:US" -> "GOOGL")
+    return ticker_str.split(":")[0].strip() or None
+
+
 def extract_trades_from_html(html: str) -> list[dict]:
-    """Extract trade data from Capitol Trades Next.js HTML page."""
+    """Extract trade data from Capitol Trades HTML.
+
+    Capitol Trades uses Next.js App Router with React Server Components.
+    Trade data is embedded in RSC flight data within self.__next_f.push() calls.
+    """
     trades = []
 
-    # Capitol Trades embeds data in Next.js script tags
-    # Look for the JSON data in script tags
-    patterns = [
-        r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>',
-        r'"trades"\s*:\s*(\[.*?\])\s*[,}]',
-    ]
-
-    next_data = None
-    for pattern in patterns:
-        match = re.search(pattern, html, re.DOTALL)
-        if match:
-            try:
-                next_data = json.loads(match.group(1))
-                break
-            except json.JSONDecodeError:
-                continue
-
-    if not next_data:
-        logger.warning("Could not find Next.js data in HTML")
-        return trades
-
-    # Navigate the Next.js data structure to find trades
+    # Strategy 1: Extract from RSC flight data (current format)
+    # The data is in self.__next_f.push([1,"..."]) calls with escaped JSON
     try:
-        # Try common Next.js data paths
-        page_props = next_data.get("props", {}).get("pageProps", {})
-        seed_data = page_props.get("initialSeedData", page_props)
+        # Find RSC chunk containing trade data (_txId is unique to trade objects)
+        match = re.search(
+            r'self\.__next_f\.push\(\[1,"(.*?_txId.*?)"\]\)', html, re.DOTALL
+        )
+        if match:
+            chunk = match.group(1)
+            # Unescape RSC string encoding
+            chunk = chunk.replace('\\"', '"').replace('\\n', '\n')
 
-        # The trades might be in different locations
-        trade_list = None
-        if isinstance(seed_data, dict):
-            trade_list = seed_data.get("trades", seed_data.get("data", []))
-        elif isinstance(seed_data, list):
-            trade_list = seed_data
-
-        if not trade_list:
-            # Try flattened structure
-            for key in page_props:
-                val = page_props[key]
-                if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
-                    if "txDate" in val[0] or "ticker" in str(val[0].keys()):
-                        trade_list = val
-                        break
-
-        if not trade_list:
-            logger.warning("Could not locate trade list in Next.js data")
-            return trades
-
-    except Exception as e:
-        logger.error(f"Error navigating Next.js data: {e}")
-        return trades
-
-    for tx in trade_list:
-        if not isinstance(tx, dict):
-            continue
-
-        try:
-            # Extract politician info
-            politician = tx.get("politician", {}) or {}
-            first = politician.get("firstName", "") or ""
-            last = politician.get("lastName", "") or ""
-            member_name = f"{first} {last}".strip()
-
-            # Extract issuer info
-            issuer = tx.get("issuer", {}) or {}
-            ticker = issuer.get("issuerTicker", "") or None
-            asset_desc = issuer.get("issuerName", "") or ""
-
-            # Parse dates
-            tx_date = None
-            if tx.get("txDate"):
-                try:
-                    tx_date = datetime.fromisoformat(
-                        tx["txDate"].replace("Z", "+00:00")
-                    ).replace(tzinfo=None)
-                except (ValueError, AttributeError):
-                    pass
-
-            pub_date = None
-            if tx.get("pubDate"):
-                try:
-                    pub_date = datetime.fromisoformat(
-                        tx["pubDate"].replace("Z", "+00:00")
-                    ).replace(tzinfo=None)
-                except (ValueError, AttributeError):
-                    pass
-
-            # Parse amount
-            amount_low, amount_high = parse_amount(tx.get("value", "") or "")
-
-            # Map party
-            party = politician.get("party", "")
-            if party:
-                party = party.title()
-
-            chamber = normalize_chamber(
-                tx.get("chamber", "") or politician.get("chamber", "")
+            # Find JSON array of trade objects
+            arr_match = re.search(
+                r'\[(\{"_issuerId.*?"value":\d+\}'
+                r'(?:,\{"_issuerId.*?"value":\d+\})*)\]',
+                chunk,
+                re.DOTALL,
             )
+            if arr_match:
+                trade_list = json.loads(arr_match.group(0))
+                logger.info(f"Extracted {len(trade_list)} trades from RSC data")
 
-            trades.append({
-                "member_name": member_name,
-                "chamber": chamber,
-                "party": party or None,
-                "state": None,
-                "district": None,
-                "filing_date": pub_date,
-                "ticker": ticker if ticker and ticker != "--" else None,
-                "asset_description": asset_desc,
-                "asset_type": issuer.get("sector", None),
-                "transaction_type": normalize_tx_type(
-                    tx.get("txType", "") or tx.get("txTypeExtended", "")
-                ),
-                "transaction_date": tx_date,
-                "amount_low": amount_low,
-                "amount_high": amount_high,
-                "owner": normalize_owner(tx.get("owner", "")),
-                "raw_filing_url": None,
-                "source": "capitol_trades",
-            })
-        except Exception as e:
-            logger.debug(f"Skipping trade entry: {e}")
-            continue
+                for tx in trade_list:
+                    trade = _parse_trade(tx)
+                    if trade:
+                        trades.append(trade)
+                return trades
+    except Exception as e:
+        logger.error(f"Error extracting RSC data: {e}")
 
+    # Strategy 2: Try legacy __NEXT_DATA__ format (fallback)
+    try:
+        match = re.search(
+            r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL
+        )
+        if match:
+            next_data = json.loads(match.group(1))
+            page_props = next_data.get("props", {}).get("pageProps", {})
+            seed_data = page_props.get("initialSeedData", page_props)
+
+            trade_list = None
+            if isinstance(seed_data, dict):
+                trade_list = seed_data.get("trades", seed_data.get("data", []))
+            elif isinstance(seed_data, list):
+                trade_list = seed_data
+
+            if trade_list:
+                for tx in trade_list:
+                    trade = _parse_trade(tx)
+                    if trade:
+                        trades.append(trade)
+                return trades
+    except Exception as e:
+        logger.debug(f"Legacy __NEXT_DATA__ extraction failed: {e}")
+
+    logger.warning("Could not extract trade data from Capitol Trades HTML")
     return trades
+
+
+def _parse_trade(tx: dict) -> dict | None:
+    """Parse a single trade object from Capitol Trades into our format."""
+    if not isinstance(tx, dict):
+        return None
+
+    try:
+        # Extract politician info
+        politician = tx.get("politician", {}) or {}
+        first = politician.get("firstName", "") or ""
+        last = politician.get("lastName", "") or ""
+        member_name = f"{first} {last}".strip()
+
+        if not member_name:
+            return None
+
+        # Extract issuer info
+        issuer = tx.get("issuer", {}) or {}
+        raw_ticker = issuer.get("issuerTicker", "") or None
+        ticker = clean_ticker(raw_ticker)
+        asset_desc = issuer.get("issuerName", "") or ""
+
+        # Parse dates
+        tx_date = None
+        if tx.get("txDate"):
+            try:
+                tx_date = datetime.fromisoformat(
+                    tx["txDate"].replace("Z", "+00:00")
+                ).replace(tzinfo=None)
+            except (ValueError, AttributeError):
+                # Try simple date format "2026-02-26"
+                try:
+                    tx_date = datetime.strptime(tx["txDate"], "%Y-%m-%d")
+                except (ValueError, AttributeError):
+                    pass
+
+        pub_date = None
+        if tx.get("pubDate"):
+            try:
+                pub_date = datetime.fromisoformat(
+                    tx["pubDate"].replace("Z", "+00:00")
+                ).replace(tzinfo=None)
+            except (ValueError, AttributeError):
+                pass
+
+        # Parse amount
+        amount_low, amount_high = parse_amount(tx.get("value"))
+
+        # Map party
+        party = politician.get("party", "")
+        if party:
+            party = party.title()
+
+        chamber = normalize_chamber(
+            tx.get("chamber", "") or politician.get("chamber", "")
+        )
+
+        # Map state from politician
+        state = (politician.get("_stateId", "") or "").upper() or None
+
+        return {
+            "member_name": member_name,
+            "chamber": chamber,
+            "party": party or None,
+            "state": state,
+            "district": None,
+            "filing_date": pub_date,
+            "ticker": ticker,
+            "asset_description": asset_desc,
+            "asset_type": issuer.get("sector", None),
+            "transaction_type": normalize_tx_type(
+                tx.get("txType", "") or tx.get("txTypeExtended", "")
+            ),
+            "transaction_date": tx_date,
+            "amount_low": amount_low,
+            "amount_high": amount_high,
+            "owner": normalize_owner(tx.get("owner", "")),
+            "raw_filing_url": None,
+            "source": "capitol_trades",
+        }
+    except Exception as e:
+        logger.debug(f"Skipping trade entry: {e}")
+        return None
 
 
 async def scrape_capitol_trades(
@@ -235,7 +280,7 @@ async def scrape_capitol_trades(
     """Scrape recent trades from Capitol Trades.
 
     Args:
-        max_pages: Maximum number of pages to fetch (96 trades per page).
+        max_pages: Maximum number of pages to fetch.
         page_size: Number of trades per page (max 96).
 
     Returns:
@@ -249,7 +294,8 @@ async def scrape_capitol_trades(
         headers={
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
         },
     ) as client:
         for page in range(1, max_pages + 1):

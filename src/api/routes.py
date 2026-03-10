@@ -97,6 +97,56 @@ def list_trades(
     return results
 
 
+@router.get("/trades/recent", response_model=list[TradeOut])
+def recent_trades(limit: int = 25, db: Session = Depends(get_db)):
+    """Get the most recent trades by transaction date."""
+    trades = (
+        db.query(Trade)
+        .join(Member)
+        .order_by(Trade.transaction_date.desc().nullslast())
+        .limit(limit)
+        .all()
+    )
+    results = []
+    for t in trades:
+        results.append(
+            TradeOut(
+                id=t.id,
+                member_name=t.member.name,
+                chamber=t.member.chamber,
+                transaction_date=t.transaction_date,
+                filing_date=t.filing_date,
+                ticker=t.ticker,
+                asset_description=t.asset_description,
+                transaction_type=t.transaction_type,
+                amount_low=t.amount_low,
+                amount_high=t.amount_high,
+                owner=t.owner,
+                sector=t.sector,
+                industry=t.industry,
+            )
+        )
+    return results
+
+
+@router.get("/stats")
+def trade_stats(db: Session = Depends(get_db)):
+    """Get basic stats about the trade database."""
+    total = db.query(Trade).count()
+    members_count = db.query(Member).count()
+    latest = (
+        db.query(Trade)
+        .order_by(Trade.transaction_date.desc().nullslast())
+        .first()
+    )
+    latest_date = latest.transaction_date.isoformat() if latest and latest.transaction_date else None
+    return {
+        "total_trades": total,
+        "total_members": members_count,
+        "latest_trade_date": latest_date,
+    }
+
+
 @router.post("/query")
 async def query_trades(req: QueryRequest, db: Session = Depends(get_db)):
     result = await natural_language_query(db, req.question)

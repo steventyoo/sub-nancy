@@ -415,15 +415,24 @@ DASHBOARD_HTML = """
 </div>
 
 <div class="nav-bar">
-  <div class="nav-tab active" onclick="showTab('query')">Query</div>
+  <div class="nav-tab active" onclick="showTab('recent')">Recent</div>
+  <div class="nav-tab" onclick="showTab('query')">Query</div>
   <div class="nav-tab" onclick="showTab('browse')">Browse</div>
   <div class="nav-tab" onclick="showTab('subscribe')">Alerts</div>
 </div>
 
 <div class="container">
 
+  <!-- RECENT TRADES TAB -->
+  <div id="tab-recent">
+    <div class="section-title">Latest Congressional Trades <span id="stats-badge" class="count-badge" style="display:none"></span></div>
+    <div class="results-section" id="recent-results">
+      <div class="loading"><span class="spinner"></span> Loading recent trades...</div>
+    </div>
+  </div>
+
   <!-- QUERY TAB -->
-  <div id="tab-query">
+  <div id="tab-query" style="display:none">
     <div class="section-title">Natural Language Query</div>
     <div class="query-card">
       <div class="query-row">
@@ -485,18 +494,46 @@ DASHBOARD_HTML = """
 
 <div class="footer">
   <div class="footer-text">Nancy the Ripper &copy; 2026</div>
-  <div class="footer-text">Data from Senate Disclosures<span class="count-badge">7,741 Trades</span></div>
+  <div class="footer-text">Data from Senate &amp; Capitol Trades<span class="count-badge" id="footer-count">Loading...</span></div>
 </div>
 
 <script>
+const TABS = ['recent','query','browse','subscribe'];
 function showTab(name) {
   document.querySelectorAll('.nav-tab').forEach((t,i) => {
-    t.classList.toggle('active', ['query','browse','subscribe'][i] === name);
+    t.classList.toggle('active', TABS[i] === name);
   });
-  ['query','browse','subscribe'].forEach(n => {
+  TABS.forEach(n => {
     document.getElementById('tab-'+n).style.display = n === name ? 'block' : 'none';
   });
 }
+
+// Load recent trades and stats on page load
+async function loadRecent() {
+  try {
+    const [tradesResp, statsResp] = await Promise.all([
+      fetch('/api/trades/recent?limit=50'),
+      fetch('/api/stats')
+    ]);
+    const trades = await tradesResp.json();
+    const stats = await statsResp.json();
+    const res = document.getElementById('recent-results');
+    const badge = document.getElementById('stats-badge');
+    if (stats.total_trades) {
+      badge.textContent = stats.total_trades.toLocaleString() + ' Trades tracked';
+      badge.style.display = 'inline-block';
+      document.getElementById('footer-count').textContent = stats.total_trades.toLocaleString() + ' Trades';
+    }
+    if (trades.length === 0) {
+      res.innerHTML = '<div class="empty">No trades found yet — trigger a scrape to load data</div>';
+    } else {
+      res.innerHTML = renderTradeTable(trades);
+    }
+  } catch(e) {
+    document.getElementById('recent-results').innerHTML = '<div class="answer" style="border-left-color:var(--red)">Failed to load: ' + e.message + '</div>';
+  }
+}
+document.addEventListener('DOMContentLoaded', loadRecent);
 
 function setQ(q) {
   document.getElementById('question').value = q;
