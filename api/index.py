@@ -2,21 +2,25 @@
 
 import sys
 import os
-import traceback
 
 # Ensure project root is in Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Test: just try importing each dep to find the problematic one
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 
-_error = None
-try:
-    from src.main import app
-except Exception as e:
-    _error = traceback.format_exc()
-    app = FastAPI()
+app = FastAPI()
 
-    @app.get("/{path:path}")
-    def error_page(path: str = ""):
-        return PlainTextResponse(f"Import error:\n\n{_error}", status_code=500)
+errors = []
+for mod_name in ['sqlalchemy', 'httpx', 'bs4', 'anthropic', 'resend',
+                 'apscheduler', 'pydantic', 'dotenv', 'lxml', 'psycopg2']:
+    try:
+        __import__(mod_name)
+        errors.append(f"OK: {mod_name}")
+    except Exception as e:
+        errors.append(f"FAIL: {mod_name} -> {e}")
+
+@app.get("/{path:path}")
+def root(path: str = ""):
+    return PlainTextResponse("\n".join(errors))
