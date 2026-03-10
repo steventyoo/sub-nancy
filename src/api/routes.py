@@ -151,20 +151,23 @@ def trigger_emails(db: Session = Depends(get_db)):
 @router.post("/scrape")
 async def trigger_scrape(db: Session = Depends(get_db)):
     """Manually trigger a scrape of all sources."""
+    from src.scrapers.capitol_trades import scrape_capitol_trades
     from src.scrapers.house import scrape_house_disclosures
     from src.scrapers.senate import scrape_senate_disclosures
     from src.scrapers.finnhub import scrape_finnhub_congress
     from src.services.trade_service import ingest_trades
 
+    capitol_trades = await scrape_capitol_trades(max_pages=30)
     house_trades = await scrape_house_disclosures()
     senate_trades = await scrape_senate_disclosures()
     finnhub_trades = await scrape_finnhub_congress()
 
-    all_trades = house_trades + senate_trades + finnhub_trades
+    all_trades = capitol_trades + house_trades + senate_trades + finnhub_trades
     new_count = ingest_trades(db, all_trades)
 
     return {
         "message": f"Scrape complete. {new_count} new trades ingested.",
+        "capitol_trades_scraped": len(capitol_trades),
         "house_scraped": len(house_trades),
         "senate_scraped": len(senate_trades),
         "finnhub_scraped": len(finnhub_trades),

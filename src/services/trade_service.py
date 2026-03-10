@@ -19,6 +19,10 @@ def get_or_create_member(db: Session, name: str, chamber: str, **kwargs) -> Memb
         member = Member(name=name, chamber=chamber, **kwargs)
         db.add(member)
         db.flush()
+    else:
+        # Update party if we have it now and didn't before
+        if kwargs.get("party") and not member.party:
+            member.party = kwargs["party"]
     return member
 
 
@@ -66,6 +70,7 @@ def ingest_trades(db: Session, raw_trades: list[dict]) -> int:
             chamber=raw["chamber"],
             state=raw.get("state"),
             district=raw.get("district"),
+            party=raw.get("party"),
         )
 
         sector, industry = enrich_sector(db, raw.get("ticker"))

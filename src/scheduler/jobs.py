@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from src.db.database import SessionLocal
+from src.scrapers.capitol_trades import scrape_capitol_trades
 from src.scrapers.house import scrape_house_disclosures
 from src.scrapers.senate import scrape_senate_disclosures
 from src.scrapers.finnhub import scrape_finnhub_congress
@@ -19,12 +20,13 @@ def run_scrape_job():
     db = SessionLocal()
     try:
         loop = asyncio.new_event_loop()
+        capitol_trades = loop.run_until_complete(scrape_capitol_trades(max_pages=30))
         house_trades = loop.run_until_complete(scrape_house_disclosures())
         senate_trades = loop.run_until_complete(scrape_senate_disclosures())
         finnhub_trades = loop.run_until_complete(scrape_finnhub_congress())
         loop.close()
 
-        all_trades = house_trades + senate_trades + finnhub_trades
+        all_trades = capitol_trades + house_trades + senate_trades + finnhub_trades
         new_count = ingest_trades(db, all_trades)
         logger.info(f"Scheduled scrape complete: {new_count} new trades")
     except Exception as e:
