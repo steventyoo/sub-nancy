@@ -14,20 +14,6 @@ from src.services.trade_service import search_trades
 router = APIRouter(prefix="/api")
 
 
-@router.get("/dbtest")
-def db_test(db: Session = Depends(get_db)):
-    """Debug endpoint to test database connection."""
-    import traceback
-    from fastapi.responses import PlainTextResponse
-    try:
-        from sqlalchemy import text
-        result = db.execute(text("SELECT count(*) FROM trades"))
-        count = result.scalar()
-        return PlainTextResponse(f"OK: {count} trades in database")
-    except Exception as e:
-        return PlainTextResponse(f"DB Error:\n{traceback.format_exc()}", status_code=500)
-
-
 # --- Schemas ---
 
 
