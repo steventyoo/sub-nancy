@@ -30,13 +30,14 @@ app.include_router(router)
 
 @app.on_event("startup")
 def startup():
-    # Initialize database and seed data
-    init_db()
-    db = SessionLocal()
-    try:
-        seed_sectors(db)
-    finally:
-        db.close()
+    # Initialize database and seed data (skip on Vercel — tables already exist)
+    if not IS_VERCEL:
+        init_db()
+        db = SessionLocal()
+        try:
+            seed_sectors(db)
+        finally:
+            db.close()
 
     # Only start scheduler for local/persistent server (not Vercel)
     if not IS_VERCEL:
