@@ -6,6 +6,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
+from sqlalchemy import func
+
 from src.db.database import get_db
 from src.db.models import Member, Subscriber, Trade
 from src.services.query_service import natural_language_query
@@ -98,11 +100,23 @@ def list_trades(
 
 
 @router.get("/trades/recent", response_model=list[TradeOut])
-def recent_trades(limit: int = 25, db: Session = Depends(get_db)):
-    """Get the most recent trades by transaction date."""
+def recent_trades(
+    member: str | None = None,
+    ticker: str | None = None,
+    transaction_type: str | None = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    """Get the most recent trades by transaction date with optional filters."""
+    query = db.query(Trade).join(Member)
+    if member:
+        query = query.filter(Member.name == member)
+    if ticker:
+        query = query.filter(Trade.ticker == ticker.upper())
+    if transaction_type:
+        query = query.filter(Trade.transaction_type.ilike(f"%{transaction_type}%"))
     trades = (
-        db.query(Trade)
-        .join(Member)
+        query
         .order_by(Trade.transaction_date.desc().nullslast())
         .limit(limit)
         .all()
@@ -127,6 +141,32 @@ def recent_trades(limit: int = 25, db: Session = Depends(get_db)):
             )
         )
     return results
+
+
+@router.get("/filters/members")
+def filter_members(db: Session = Depends(get_db)):
+    """Get distinct member names for dropdown filter."""
+    rows = (
+        db.query(Member.name)
+        .join(Trade, Trade.member_id == Member.id)
+        .group_by(Member.name)
+        .order_by(Member.name)
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
+@router.get("/filters/tickers")
+def filter_tickers(db: Session = Depends(get_db)):
+    """Get distinct tickers for dropdown filter."""
+    rows = (
+        db.query(Trade.ticker)
+        .filter(Trade.ticker.isnot(None), Trade.ticker != "")
+        .group_by(Trade.ticker)
+        .order_by(Trade.ticker)
+        .all()
+    )
+    return [r[0] for r in rows]
 
 
 @router.get("/stats")

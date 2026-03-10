@@ -426,6 +426,20 @@ DASHBOARD_HTML = """
   <!-- RECENT TRADES TAB -->
   <div id="tab-recent">
     <div class="section-title">Latest Congressional Trades <span id="stats-badge" class="count-badge" style="display:none"></span></div>
+    <div class="filters" style="margin-bottom:20px">
+      <select class="filter-select" id="r-member" onchange="filterRecent()" style="min-width:200px">
+        <option value="">All Members</option>
+      </select>
+      <select class="filter-select" id="r-ticker" onchange="filterRecent()" style="min-width:140px">
+        <option value="">All Tickers</option>
+      </select>
+      <select class="filter-select" id="r-type" onchange="filterRecent()">
+        <option value="">All Types</option>
+        <option value="Purchase">Purchase</option>
+        <option value="Sale">Sale</option>
+      </select>
+      <button class="btn btn-primary" onclick="clearFilters()" style="font-size:11px;padding:10px 18px">Clear</button>
+    </div>
     <div class="results-section" id="recent-results">
       <div class="loading"><span class="spinner"></span> Loading recent trades...</div>
     </div>
@@ -508,7 +522,22 @@ function showTab(name) {
   });
 }
 
-// Load recent trades and stats on page load
+// Load dropdowns and recent trades on page load
+async function loadDropdowns() {
+  try {
+    const [membersResp, tickersResp] = await Promise.all([
+      fetch('/api/filters/members'),
+      fetch('/api/filters/tickers')
+    ]);
+    const members = await membersResp.json();
+    const tickers = await tickersResp.json();
+    const mSel = document.getElementById('r-member');
+    members.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; mSel.appendChild(o); });
+    const tSel = document.getElementById('r-ticker');
+    tickers.forEach(t => { const o = document.createElement('option'); o.value = t; o.textContent = t; tSel.appendChild(o); });
+  } catch(e) { console.error('Failed to load filters:', e); }
+}
+
 async function loadRecent() {
   try {
     const [tradesResp, statsResp] = await Promise.all([
@@ -533,7 +562,39 @@ async function loadRecent() {
     document.getElementById('recent-results').innerHTML = '<div class="answer" style="border-left-color:var(--red)">Failed to load: ' + e.message + '</div>';
   }
 }
-document.addEventListener('DOMContentLoaded', loadRecent);
+
+async function filterRecent() {
+  const member = document.getElementById('r-member').value;
+  const ticker = document.getElementById('r-ticker').value;
+  const txType = document.getElementById('r-type').value;
+  const params = new URLSearchParams();
+  if (member) params.set('member', member);
+  if (ticker) params.set('ticker', ticker);
+  if (txType) params.set('transaction_type', txType);
+  params.set('limit', '50');
+  const res = document.getElementById('recent-results');
+  res.innerHTML = '<div class="loading"><span class="spinner"></span> Filtering...</div>';
+  try {
+    const resp = await fetch('/api/trades/recent?' + params.toString());
+    const trades = await resp.json();
+    if (trades.length === 0) {
+      res.innerHTML = '<div class="empty">No trades match those filters</div>';
+    } else {
+      res.innerHTML = '<div style="margin-bottom:12px"><span class="count-badge">' + trades.length + ' Results</span></div>' + renderTradeTable(trades);
+    }
+  } catch(e) {
+    res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Error: ' + e.message + '</div>';
+  }
+}
+
+function clearFilters() {
+  document.getElementById('r-member').value = '';
+  document.getElementById('r-ticker').value = '';
+  document.getElementById('r-type').value = '';
+  loadRecent();
+}
+
+document.addEventListener('DOMContentLoaded', () => { loadDropdowns(); loadRecent(); });
 
 function setQ(q) {
   document.getElementById('question').value = q;
