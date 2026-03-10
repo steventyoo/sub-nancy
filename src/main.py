@@ -1,8 +1,8 @@
 """Main FastAPI application."""
 
 import logging
+import os
 
-from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
@@ -10,7 +10,8 @@ from src.api.routes import router
 from src.config import settings
 from src.db.database import init_db, SessionLocal
 from src.db.seed import seed_sectors
-from src.scheduler.jobs import run_email_job, run_scrape_job
+
+IS_VERCEL = os.environ.get("VERCEL", "") == "1"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,8 +27,6 @@ app = FastAPI(
 
 app.include_router(router)
 
-scheduler = BackgroundScheduler()
-
 
 @app.on_event("startup")
 def startup():
@@ -39,31 +38,41 @@ def startup():
     finally:
         db.close()
 
-    # Schedule jobs
-    scheduler.add_job(
-        run_scrape_job,
-        "interval",
-        hours=settings.scrape_interval_hours,
-        id="scrape_job",
-        name="Scrape congressional disclosures",
-    )
-    scheduler.add_job(
-        run_email_job,
-        "cron",
-        hour=settings.email_hour,
-        id="email_job",
-        name="Send daily trade email",
-    )
-    scheduler.start()
-    logger.info(
-        f"Scheduler started: scraping every {settings.scrape_interval_hours}h, "
-        f"emails at {settings.email_hour}:00 UTC"
-    )
+    # Only start scheduler for local/persistent server (not Vercel)
+    if not IS_VERCEL:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from src.scheduler.jobs import run_email_job, run_scrape_job
+
+        global _scheduler
+        _scheduler = BackgroundScheduler()
+        _scheduler.add_job(
+            run_scrape_job,
+            "interval",
+            hours=settings.scrape_interval_hours,
+            id="scrape_job",
+            name="Scrape congressional disclosures",
+        )
+        _scheduler.add_job(
+            run_email_job,
+            "cron",
+            hour=settings.email_hour,
+            id="email_job",
+            name="Send daily trade email",
+        )
+        _scheduler.start()
+        logger.info(
+            f"Scheduler started: scraping every {settings.scrape_interval_hours}h, "
+            f"emails at {settings.email_hour}:00 UTC"
+        )
+
+
+_scheduler = None
 
 
 @app.on_event("shutdown")
 def shutdown():
-    scheduler.shutdown()
+    if _scheduler:
+        _scheduler.shutdown()
 
 
 @app.get("/", response_class=HTMLResponse)

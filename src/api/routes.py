@@ -139,6 +139,15 @@ def unsubscribe(subscriber_id: int, db: Session = Depends(get_db)):
     return {"message": "Unsubscribed successfully"}
 
 
+@router.post("/send-emails")
+def trigger_emails(db: Session = Depends(get_db)):
+    """Trigger email notifications (used by Vercel cron)."""
+    from src.services.email_service import send_daily_notifications
+
+    send_daily_notifications(db)
+    return {"message": "Email job completed"}
+
+
 @router.post("/scrape")
 async def trigger_scrape(db: Session = Depends(get_db)):
     """Manually trigger a scrape of all sources."""

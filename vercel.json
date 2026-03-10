@@ -1,0 +1,24 @@
+{
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api/index"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/scrape",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/send-emails",
+      "schedule": "0 13 * * *"
+    }
+  ]
+}
