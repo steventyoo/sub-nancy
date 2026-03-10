@@ -1,0 +1,7 @@
+.env
+.venv
+*.db
+trades.db
+__pycache__
+.claude
+tests
