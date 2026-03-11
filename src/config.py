@@ -19,6 +19,9 @@ class Settings:
     email_from: str = os.getenv("EMAIL_FROM", "trades@yourdomain.com")
     scrape_interval_hours: int = int(os.getenv("SCRAPE_INTERVAL_HOURS", "24"))
     email_hour: int = int(os.getenv("EMAIL_HOUR", "8"))
+    # Basic auth to lock down the app (set in Railway env vars)
+    admin_user: str = os.getenv("ADMIN_USER", "")
+    admin_pass: str = os.getenv("ADMIN_PASS", "")
 
 
 settings = Settings()

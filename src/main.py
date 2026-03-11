@@ -1,10 +1,12 @@
 """Main FastAPI application."""
 
+import base64
 import logging
 import os
+import secrets
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, Response
 
 from src.api.routes import router
 from src.config import settings
@@ -26,6 +28,29 @@ app = FastAPI(
 )
 
 app.include_router(router)
+
+
+# --- Basic Auth Middleware (if ADMIN_USER and ADMIN_PASS are set) ---
+@app.middleware("http")
+async def basic_auth_middleware(request: Request, call_next):
+    if not settings.admin_user or not settings.admin_pass:
+        return await call_next(request)  # No auth configured, allow all
+
+    auth = request.headers.get("Authorization")
+    if auth and auth.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(auth[6:]).decode("utf-8")
+            user, passwd = decoded.split(":", 1)
+            if secrets.compare_digest(user, settings.admin_user) and secrets.compare_digest(passwd, settings.admin_pass):
+                return await call_next(request)
+        except Exception:
+            pass
+
+    return Response(
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Nancy the Ripper"'},
+        content="Unauthorized",
+    )
 
 
 @app.on_event("startup")
@@ -428,9 +453,16 @@ DASHBOARD_HTML = """
     color: var(--gray);
   }
 
+  /* PARTY BADGES */
+  .party-r { color: #c0392b; font-size: 10px; font-weight: 700; font-family: 'IBM Plex Mono', monospace; margin-left: 4px; }
+  .party-d { color: #2980b9; font-size: 10px; font-weight: 700; font-family: 'IBM Plex Mono', monospace; margin-left: 4px; }
+  .party-i { color: var(--gray); font-size: 10px; font-weight: 700; font-family: 'IBM Plex Mono', monospace; margin-left: 4px; }
+
   /* SIGNAL BADGES */
+  .signal-strong-buy { background: #1b5e20; color: #fff; border: 1px solid #1b5e20; padding: 3px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
   .signal-buy { background: #e8f5e9; color: var(--green); border: 1px solid #c8e6c9; padding: 3px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
   .signal-sell { background: #fce4ec; color: var(--red); border: 1px solid #f8bbd0; padding: 3px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+  .signal-strong-sell { background: #b71c1c; color: #fff; border: 1px solid #b71c1c; padding: 3px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
   .signal-mixed { background: var(--cream-light); color: var(--gray); border: 1px solid var(--border); padding: 3px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
 
   /* BAR CHART */
@@ -454,7 +486,7 @@ DASHBOARD_HTML = """
   @media (max-width: 768px) {
     .stat-card { padding: 14px; }
     .stat-value { font-size: 20px; }
-    #dash-stats { grid-template-columns: repeat(2, 1fr) !important; }
+    #dash-stats { grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }
     .profile-stats { grid-template-columns: repeat(2, 1fr); }
     .nav-tab { padding: 10px 14px; font-size: 11px; letter-spacing: 0.5px; }
   }
@@ -482,8 +514,9 @@ DASHBOARD_HTML = """
   <!-- DASHBOARD TAB -->
   <div id="tab-dashboard">
     <div class="section-title">Market Overview <span id="dash-badge" class="count-badge" style="display:none"></span></div>
-    <div id="dash-stats" class="stats-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:32px">
+    <div id="dash-stats" class="stats-grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-bottom:32px">
       <div class="stat-card"><div class="stat-value" id="ds-total">-</div><div class="stat-label">Total Trades</div></div>
+      <div class="stat-card"><div class="stat-value" id="ds-filing">-</div><div class="stat-label">Filing / 535</div></div>
       <div class="stat-card"><div class="stat-value" id="ds-members">-</div><div class="stat-label">Members Tracked</div></div>
       <div class="stat-card"><div class="stat-value" style="color:var(--green)" id="ds-buys">-</div><div class="stat-label">Purchases</div></div>
       <div class="stat-card"><div class="stat-value" style="color:var(--red)" id="ds-sells">-</div><div class="stat-label">Sales</div></div>
@@ -842,22 +875,31 @@ function renderTable(rows) {
   return h;
 }
 
+function partyBadge(party) {
+  if (!party) return '';
+  const p = party.charAt(0).toUpperCase();
+  const cls = p === 'R' ? 'party-r' : p === 'D' ? 'party-d' : 'party-i';
+  return '<span class="'+cls+'">('+p+')</span>';
+}
+
 function renderTradeTable(trades) {
   let h = '<div style="overflow-x:auto"><table class="trades-table"><thead><tr>';
-  h += '<th>Member</th><th>Type</th><th>Ticker</th><th>Asset</th><th>Amount</th><th>Date</th><th>Sector</th>';
+  h += '<th>Member</th><th>Type</th><th>Ticker</th><th>Asset</th><th>Amount</th><th>Trade Date</th><th>Filed</th><th>Sector</th>';
   h += '</tr></thead><tbody>';
   trades.forEach(t => {
     const type = t.transaction_type || '';
     const badge = type.includes('Purchase') ? 'badge-buy' : type.includes('Sale') ? 'badge-sell' : 'badge-other';
     const amt = t.amount_low ? ('$' + t.amount_low.toLocaleString() + (t.amount_high ? ' - $' + t.amount_high.toLocaleString() : '+')) : 'N/A';
-    const date = t.transaction_date ? t.transaction_date.split('T')[0] : 'N/A';
+    const txDate = t.transaction_date ? t.transaction_date.split('T')[0] : 'N/A';
+    const fileDate = t.filing_date ? t.filing_date.split('T')[0] : '-';
     h += '<tr>';
-    h += '<td><strong class="member-link" onclick="showProfile(\\'' + escapeHtml(t.member_name) + '\\')">' + escapeHtml(t.member_name) + '</strong></td>';
+    h += '<td><strong class="member-link" onclick="showProfile(\\'' + escapeHtml(t.member_name) + '\\')">' + escapeHtml(t.member_name) + '</strong>' + partyBadge(t.party) + '</td>';
     h += '<td><span class="badge ' + badge + '">' + escapeHtml(type) + '</span></td>';
     h += '<td><strong>' + escapeHtml(t.ticker || 'N/A') + '</strong></td>';
     h += '<td>' + escapeHtml((t.asset_description || '').substring(0, 40)) + '</td>';
     h += '<td>' + amt + '</td>';
-    h += '<td>' + date + '</td>';
+    h += '<td>' + txDate + '</td>';
+    h += '<td style="color:var(--gray-light);font-size:11px">' + fileDate + '</td>';
     h += '<td>' + escapeHtml(t.sector || '') + '</td>';
     h += '</tr>';
   });
@@ -871,6 +913,7 @@ async function loadDashboard() {
     const resp = await fetch('/api/dashboard');
     const d = await resp.json();
     document.getElementById('ds-total').textContent = d.total_trades.toLocaleString();
+    document.getElementById('ds-filing').textContent = d.filing_members + ' / ' + d.congress_total;
     document.getElementById('ds-members').textContent = d.total_members.toLocaleString();
     document.getElementById('ds-buys').textContent = d.buy_count.toLocaleString();
     document.getElementById('ds-sells').textContent = d.sell_count.toLocaleString();
@@ -901,7 +944,7 @@ async function loadDashboard() {
       const pct = Math.round(m.trade_count / maxMb * 100);
       const partyColor = m.party === 'Republican' ? '#c0392b' : m.party === 'Democrat' ? '#2980b9' : 'var(--gray)';
       mbHtml += '<div class="bar-row">';
-      mbHtml += '<div class="bar-label"><strong class="member-link" onclick="showProfile(\\''+escapeHtml(m.name)+'\\')">'+escapeHtml(m.name.split(' ').pop())+'</strong></div>';
+      mbHtml += '<div class="bar-label"><strong class="member-link" onclick="showProfile(\\''+escapeHtml(m.name)+'\\')">'+escapeHtml(m.name.split(' ').pop())+'</strong>'+partyBadge(m.party)+'</div>';
       mbHtml += '<div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+partyColor+'"></div></div>';
       mbHtml += '<div class="bar-count">'+m.trade_count+'</div>';
       mbHtml += '</div>';
@@ -946,7 +989,7 @@ async function loadLeaderboard() {
       const partyColor = r.party === 'Republican' ? '#c0392b' : r.party === 'Democrat' ? '#2980b9' : 'var(--gray)';
       h += '<tr>';
       h += '<td style="font-weight:700;color:var(--gray)">'+r.rank+'</td>';
-      h += '<td><strong class="member-link" onclick="showProfile(\\''+escapeHtml(r.name)+'\\')">'+escapeHtml(r.name)+'</strong></td>';
+      h += '<td><strong class="member-link" onclick="showProfile(\\''+escapeHtml(r.name)+'\\')">'+escapeHtml(r.name)+'</strong>'+partyBadge(r.party)+'</td>';
       h += '<td>'+escapeHtml(r.chamber)+'</td>';
       h += '<td><span style="background:'+partyBg+';color:'+partyColor+';padding:2px 8px;font-size:11px;font-family:IBM Plex Mono,monospace;font-weight:600">'+escapeHtml(r.party)+'</span></td>';
       h += '<td>'+escapeHtml(r.state)+'</td>';
@@ -1038,14 +1081,17 @@ async function loadScreener() {
     const rows = await resp.json();
     if (!rows.length) { res.innerHTML = '<div class="empty">No data for this period</div>'; return; }
     let h = '<div style="overflow-x:auto"><table class="trades-table"><thead><tr>';
-    h += '<th>Ticker</th><th>Sector</th><th>Signal</th><th>Trades</th><th>Members</th><th>Buys</th><th>Sells</th><th>Est. Volume</th><th>Last Trade</th>';
+    h += '<th>Ticker</th><th>Sector</th><th>Signal</th><th>Score</th><th>Trades</th><th>Members</th><th>Buys</th><th>Sells</th><th>Est. Volume</th><th>Last Trade</th>';
     h += '</tr></thead><tbody>';
     rows.forEach(r => {
-      const sigClass = r.signal === 'BUY' ? 'signal-buy' : r.signal === 'SELL' ? 'signal-sell' : 'signal-mixed';
+      const sigMap = {'STRONG BUY':'signal-strong-buy','BUY':'signal-buy','SELL':'signal-sell','STRONG SELL':'signal-strong-sell','MIXED':'signal-mixed'};
+      const sigClass = sigMap[r.signal] || 'signal-mixed';
       h += '<tr>';
       h += '<td><strong>'+escapeHtml(r.ticker)+'</strong></td>';
       h += '<td>'+escapeHtml(r.sector)+'</td>';
       h += '<td><span class="'+sigClass+'">'+r.signal+'</span></td>';
+      const scoreColor = r.score > 0 ? 'var(--green)' : r.score < 0 ? 'var(--red)' : 'var(--gray)';
+      h += '<td style="color:'+scoreColor+';font-weight:700">'+(r.score > 0 ? '+' : '')+r.score+'</td>';
       h += '<td><strong>'+r.trade_count+'</strong></td>';
       h += '<td>'+r.unique_members+'</td>';
       h += '<td style="color:var(--green)">'+r.buys+'</td>';

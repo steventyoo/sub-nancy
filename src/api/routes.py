@@ -22,6 +22,7 @@ router = APIRouter(prefix="/api")
 class TradeOut(BaseModel):
     id: int
     member_name: str
+    party: str | None
     chamber: str
     transaction_date: datetime | None
     filing_date: datetime | None
@@ -83,6 +84,7 @@ def list_trades(
             TradeOut(
                 id=t.id,
                 member_name=t.member.name,
+                party=t.member.party,
                 chamber=t.member.chamber,
                 transaction_date=t.transaction_date,
                 filing_date=t.filing_date,
@@ -127,6 +129,7 @@ def recent_trades(
             TradeOut(
                 id=t.id,
                 member_name=t.member.name,
+                party=t.member.party,
                 chamber=t.member.chamber,
                 transaction_date=t.transaction_date,
                 filing_date=t.filing_date,
@@ -213,6 +216,10 @@ def dashboard_stats(db: Session = Depends(get_db)):
     # Total counts
     total_trades = db.query(Trade).count()
     total_members = db.query(Member).count()
+    # Members who actually filed (have trades) vs total congress (535)
+    filing_members = (
+        db.query(func.count(func.distinct(Trade.member_id))).scalar() or 0
+    )
 
     # Buy/sell ratio
     buy_count = db.query(Trade).filter(Trade.transaction_type.ilike("%purchase%")).count()
@@ -265,6 +272,8 @@ def dashboard_stats(db: Session = Depends(get_db)):
     return {
         "total_trades": total_trades,
         "total_members": total_members,
+        "filing_members": filing_members,
+        "congress_total": 535,
         "buy_count": buy_count,
         "sell_count": sell_count,
         "trades_this_week": trades_this_week,
@@ -400,6 +409,7 @@ def member_profile(member_name: str, db: Session = Depends(get_db)):
             TradeOut(
                 id=t.id,
                 member_name=member.name,
+                party=member.party,
                 chamber=member.chamber,
                 transaction_date=t.transaction_date,
                 filing_date=t.filing_date,
@@ -457,20 +467,52 @@ def stock_screener(
         .all()
     )
 
-    return [
-        {
+    results = []
+    for r in rows:
+        buys = r.buys or 0
+        sells = r.sells or 0
+        members = r.unique_members or 1
+        volume = r.total_volume or 0
+
+        # Weighted signal score:
+        # - Buy/sell ratio (base signal)
+        # - Unique members multiplier (more members = stronger conviction)
+        # - Volume factor (higher volume = stronger signal)
+        if buys + sells == 0:
+            score = 0
+        else:
+            ratio = (buys - sells) / (buys + sells)  # -1 to +1
+            member_mult = min(members / 2.0, 3.0)  # Up to 3x for 6+ members
+            vol_factor = 1.0 + min(volume / 500000.0, 2.0)  # Up to 3x for $500k+
+            score = round(ratio * member_mult * vol_factor, 2)
+
+        if score > 0.3:
+            signal = "STRONG BUY"
+        elif score > 0:
+            signal = "BUY"
+        elif score < -0.3:
+            signal = "STRONG SELL"
+        elif score < 0:
+            signal = "SELL"
+        else:
+            signal = "MIXED"
+
+        results.append({
             "ticker": r.ticker,
             "sector": r.sector or "N/A",
             "trade_count": r.trade_count,
-            "unique_members": r.unique_members,
-            "buys": r.buys or 0,
-            "sells": r.sells or 0,
-            "signal": "BUY" if (r.buys or 0) > (r.sells or 0) else "SELL" if (r.sells or 0) > (r.buys or 0) else "MIXED",
-            "total_volume": round(r.total_volume) if r.total_volume else 0,
+            "unique_members": members,
+            "buys": buys,
+            "sells": sells,
+            "signal": signal,
+            "score": score,
+            "total_volume": round(volume),
             "last_trade_date": r.last_trade_date.isoformat() if r.last_trade_date else None,
-        }
-        for r in rows
-    ]
+        })
+
+    # Sort by absolute score (strongest signals first)
+    results.sort(key=lambda x: abs(x["score"]), reverse=True)
+    return results
 
 
 @router.post("/subscribe")
