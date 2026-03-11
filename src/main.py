@@ -1170,9 +1170,9 @@ function escapeCsvField(val) {
 }
 
 function downloadCSV(rows, headers, filename) {
-  let csv = headers.map(escapeCsvField).join(',') + '\n';
+  let csv = headers.map(escapeCsvField).join(',') + '\\n';
   rows.forEach(r => {
-    csv += headers.map(h => escapeCsvField(r[h] ?? '')).join(',') + '\n';
+    csv += headers.map(h => escapeCsvField(r[h] ?? '')).join(',') + '\\n';
   });
   const blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
   const url = URL.createObjectURL(blob);
