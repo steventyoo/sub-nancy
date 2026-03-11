@@ -552,8 +552,13 @@ def trigger_emails(db: Session = Depends(get_db)):
     return {"message": "Email job completed"}
 
 
-def _run_scrape():
-    """Run scrape in background thread so it doesn't block the server."""
+def _run_scrape(mode: str = "daily"):
+    """Run scrape in background thread so it doesn't block the server.
+
+    Modes:
+      - "daily": Quick sync — Capitol Trades (10 pages) + all other sources
+      - "backfill": Full historical — Capitol Trades (400 pages) + all sources
+    """
     import asyncio
     import logging
 
@@ -565,32 +570,57 @@ def _run_scrape():
     from src.services.trade_service import ingest_trades
 
     logger = logging.getLogger(__name__)
-    logger.info("Background scrape started")
+
+    ct_pages = 400 if mode == "backfill" else 10
+    logger.info(f"Background scrape started (mode={mode}, capitol_pages={ct_pages})")
 
     db = SessionLocal()
     try:
         loop = asyncio.new_event_loop()
-        capitol_trades = loop.run_until_complete(scrape_capitol_trades(max_pages=400))
-        house_trades = loop.run_until_complete(scrape_house_disclosures())
+
+        # Capitol Trades: main source for both chambers
+        capitol_trades = loop.run_until_complete(scrape_capitol_trades(max_pages=ct_pages))
+        logger.info(f"Capitol Trades: {len(capitol_trades)} trades scraped")
+
+        # Senate: GitHub data repo (comprehensive Senate history)
         senate_trades = loop.run_until_complete(scrape_senate_disclosures())
+        logger.info(f"Senate GitHub: {len(senate_trades)} trades scraped")
+
+        # House: official clerk site (limited — no PDF parsing)
+        house_trades = loop.run_until_complete(scrape_house_disclosures())
+        logger.info(f"House Clerk: {len(house_trades)} trades scraped")
+
+        # Finnhub: cross-reference with pagination
         finnhub_trades = loop.run_until_complete(scrape_finnhub_congress())
+        logger.info(f"Finnhub: {len(finnhub_trades)} trades scraped")
+
         loop.close()
 
-        all_trades = capitol_trades + house_trades + senate_trades + finnhub_trades
+        all_trades = capitol_trades + senate_trades + house_trades + finnhub_trades
         new_count = ingest_trades(db, all_trades)
         logger.info(
-            f"Background scrape complete: {new_count} new trades "
-            f"(capitol={len(capitol_trades)}, house={len(house_trades)}, "
-            f"senate={len(senate_trades)}, finnhub={len(finnhub_trades)})"
+            f"Background scrape complete ({mode}): {new_count} new trades "
+            f"(capitol={len(capitol_trades)}, senate={len(senate_trades)}, "
+            f"house={len(house_trades)}, finnhub={len(finnhub_trades)})"
         )
     except Exception as e:
-        logger.error(f"Background scrape failed: {e}")
+        logger.error(f"Background scrape failed: {e}", exc_info=True)
     finally:
         db.close()
 
 
 @router.post("/scrape")
 def trigger_scrape(background_tasks: BackgroundTasks):
-    """Manually trigger a scrape of all sources (runs in background)."""
-    background_tasks.add_task(_run_scrape)
-    return {"message": "Scrape started in background. Check logs for progress."}
+    """Quick daily sync — Capitol Trades (10 pages) + all other sources."""
+    background_tasks.add_task(_run_scrape, "daily")
+    return {"message": "Daily scrape started in background. Check logs for progress."}
+
+
+@router.post("/backfill")
+def trigger_backfill(background_tasks: BackgroundTasks):
+    """Full historical backfill — Capitol Trades (400 pages) + all sources.
+
+    This can take 5-10 minutes due to rate-limiting delays.
+    """
+    background_tasks.add_task(_run_scrape, "backfill")
+    return {"message": "Full backfill started. Capitol Trades (400 pages) — this will take 5-10 min."}

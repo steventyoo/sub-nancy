@@ -15,22 +15,22 @@ logger = logging.getLogger(__name__)
 
 
 def run_scrape_job():
-    """Scrape all sources and ingest new trades."""
-    logger.info("Starting scheduled scrape job")
+    """Scrape all sources and ingest new trades (daily sync — 10 pages Capitol Trades)."""
+    logger.info("Starting scheduled scrape job (daily)")
     db = SessionLocal()
     try:
         loop = asyncio.new_event_loop()
-        capitol_trades = loop.run_until_complete(scrape_capitol_trades(max_pages=30))
+        capitol_trades = loop.run_until_complete(scrape_capitol_trades(max_pages=10))
         house_trades = loop.run_until_complete(scrape_house_disclosures())
         senate_trades = loop.run_until_complete(scrape_senate_disclosures())
         finnhub_trades = loop.run_until_complete(scrape_finnhub_congress())
         loop.close()
 
-        all_trades = capitol_trades + house_trades + senate_trades + finnhub_trades
+        all_trades = capitol_trades + senate_trades + house_trades + finnhub_trades
         new_count = ingest_trades(db, all_trades)
         logger.info(f"Scheduled scrape complete: {new_count} new trades")
     except Exception as e:
-        logger.error(f"Scrape job failed: {e}")
+        logger.error(f"Scrape job failed: {e}", exc_info=True)
     finally:
         db.close()
 

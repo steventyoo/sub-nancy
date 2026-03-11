@@ -5,6 +5,7 @@ Data is embedded as JSON in React Server Component (RSC) flight data
 within the Next.js App Router HTML response.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -288,8 +289,11 @@ async def scrape_capitol_trades(
     """
     all_trades = []
 
+    consecutive_failures = 0
+    max_failures = 5  # Stop after 5 consecutive failures (rate-limited or blocked)
+
     async with httpx.AsyncClient(
-        timeout=30,
+        timeout=45,
         follow_redirects=True,
         headers={
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -303,9 +307,19 @@ async def scrape_capitol_trades(
             try:
                 resp = await client.get(url)
                 resp.raise_for_status()
+                consecutive_failures = 0
             except httpx.HTTPError as e:
-                logger.error(f"Failed to fetch Capitol Trades page {page}: {e}")
-                break
+                consecutive_failures += 1
+                logger.error(
+                    f"Failed to fetch Capitol Trades page {page}: {e} "
+                    f"(failure {consecutive_failures}/{max_failures})"
+                )
+                if consecutive_failures >= max_failures:
+                    logger.error("Too many consecutive failures, stopping scrape")
+                    break
+                # Back off on failure
+                await asyncio.sleep(3)
+                continue
 
             page_trades = extract_trades_from_html(resp.text)
 
@@ -314,14 +328,20 @@ async def scrape_capitol_trades(
                 break
 
             all_trades.extend(page_trades)
-            logger.info(
-                f"Page {page}: fetched {len(page_trades)} trades "
-                f"(total: {len(all_trades)})"
-            )
+
+            if page % 25 == 0 or page <= 3:
+                logger.info(
+                    f"Page {page}/{max_pages}: fetched {len(page_trades)} trades "
+                    f"(total: {len(all_trades)})"
+                )
 
             # If we got fewer than expected, we've reached the end
             if len(page_trades) < page_size:
+                logger.info(f"Got {len(page_trades)} < {page_size} on page {page}, reached end")
                 break
 
-    logger.info(f"Total Capitol Trades scraped: {len(all_trades)}")
+            # Rate-limit delay: 0.5s between pages to avoid getting blocked
+            await asyncio.sleep(0.5)
+
+    logger.info(f"Total Capitol Trades scraped: {len(all_trades)} from {page} pages")
     return all_trades
