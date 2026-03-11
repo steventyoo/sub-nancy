@@ -274,7 +274,7 @@ def _parse_trade(tx: dict) -> dict | None:
 
 
 async def scrape_capitol_trades(
-    max_pages: int = 30,
+    max_pages: int = 400,
     page_size: int = 96,
 ) -> list[dict]:
     """Scrape recent trades from Capitol Trades.

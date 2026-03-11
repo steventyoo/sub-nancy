@@ -516,7 +516,7 @@ DASHBOARD_HTML = """
     <div class="section-title">Market Overview <span id="dash-badge" class="count-badge" style="display:none"></span></div>
     <div id="dash-stats" class="stats-grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-bottom:32px">
       <div class="stat-card"><div class="stat-value" id="ds-total">-</div><div class="stat-label">Total Trades</div></div>
-      <div class="stat-card"><div class="stat-value" id="ds-filing">-</div><div class="stat-label">Filing / 535</div></div>
+      <div class="stat-card"><div class="stat-value" id="ds-filing">-</div><div class="stat-label">Disclosed / 535</div></div>
       <div class="stat-card"><div class="stat-value" id="ds-members">-</div><div class="stat-label">Members Tracked</div></div>
       <div class="stat-card"><div class="stat-value" style="color:var(--green)" id="ds-buys">-</div><div class="stat-label">Purchases</div></div>
       <div class="stat-card"><div class="stat-value" style="color:var(--red)" id="ds-sells">-</div><div class="stat-label">Sales</div></div>

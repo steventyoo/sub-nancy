@@ -570,7 +570,7 @@ def _run_scrape():
     db = SessionLocal()
     try:
         loop = asyncio.new_event_loop()
-        capitol_trades = loop.run_until_complete(scrape_capitol_trades(max_pages=30))
+        capitol_trades = loop.run_until_complete(scrape_capitol_trades(max_pages=400))
         house_trades = loop.run_until_complete(scrape_house_disclosures())
         senate_trades = loop.run_until_complete(scrape_senate_disclosures())
         finnhub_trades = loop.run_until_complete(scrape_finnhub_congress())

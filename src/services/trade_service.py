@@ -37,7 +37,11 @@ def enrich_sector(db: Session, ticker: str | None) -> tuple[str | None, str | No
 
 
 def trade_exists(db: Session, member_id: int, trade_data: dict) -> bool:
-    """Check for duplicate trade."""
+    """Check for duplicate trade.
+
+    Uses a tighter dedup key that includes filing_date and owner so that
+    legitimate same-day trades on the same ticker aren't dropped.
+    """
     filters = [Trade.member_id == member_id]
 
     if trade_data.get("ticker"):
@@ -48,6 +52,14 @@ def trade_exists(db: Session, member_id: int, trade_data: dict) -> bool:
         filters.append(Trade.transaction_type == trade_data["transaction_type"])
     if trade_data.get("amount_low") is not None:
         filters.append(Trade.amount_low == trade_data["amount_low"])
+
+    # Include filing_date to distinguish separate filings on the same day
+    if trade_data.get("filing_date"):
+        filters.append(Trade.filing_date == trade_data["filing_date"])
+
+    # Include owner to distinguish self vs spouse vs child trades
+    if trade_data.get("owner"):
+        filters.append(Trade.owner == trade_data["owner"])
 
     # Need at least ticker or asset_description to dedup meaningfully
     if not trade_data.get("ticker") and trade_data.get("asset_description"):
@@ -82,6 +94,8 @@ def ingest_trades(db: Session, raw_trades: list[dict]) -> int:
             "amount_low": raw.get("amount_low"),
             "amount_high": raw.get("amount_high"),
             "asset_description": raw.get("asset_description"),
+            "filing_date": raw.get("filing_date"),
+            "owner": raw.get("owner"),
         }
 
         if trade_exists(db, member.id, trade_data):
