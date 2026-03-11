@@ -1163,7 +1163,7 @@ function escapeHtml(s) {
 function escapeCsvField(val) {
   if (val === null || val === undefined) return '';
   const s = String(val);
-  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+  if (s.includes(',') || s.includes('"') || s.includes('\\n')) {
     return '"' + s.replace(/"/g, '""') + '"';
   }
   return s;
