@@ -482,6 +482,26 @@ DASHBOARD_HTML = """
   .member-link { cursor: pointer; text-decoration: underline; text-decoration-color: var(--cream-dark); text-underline-offset: 2px; }
   .member-link:hover { text-decoration-color: var(--black); }
 
+  /* DOWNLOAD BUTTON */
+  .btn-download {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 18px;
+    background: var(--white);
+    border: 2px solid var(--black);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    cursor: pointer;
+    transition: all 0.15s;
+    color: var(--black);
+  }
+  .btn-download:hover { background: var(--black); color: var(--white); }
+  .btn-download svg { width: 14px; height: 14px; }
+
   /* RESPONSIVE */
   @media (max-width: 768px) {
     .stat-card { padding: 14px; }
@@ -513,7 +533,10 @@ DASHBOARD_HTML = """
 
   <!-- DASHBOARD TAB -->
   <div id="tab-dashboard">
-    <div class="section-title">Market Overview <span id="dash-badge" class="count-badge" style="display:none"></span></div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div class="section-title">Market Overview <span id="dash-badge" class="count-badge" style="display:none"></span></div>
+      <button class="btn-download" onclick="downloadDashboardCSV()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> CSV</button>
+    </div>
     <div id="dash-stats" class="stats-grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-bottom:32px">
       <div class="stat-card"><div class="stat-value" id="ds-total">-</div><div class="stat-label">Total Trades</div></div>
       <div class="stat-card"><div class="stat-value" id="ds-filing">-</div><div class="stat-label">Disclosed / 535</div></div>
@@ -545,7 +568,10 @@ DASHBOARD_HTML = """
 
   <!-- LEADERBOARD TAB -->
   <div id="tab-leaderboard" style="display:none">
-    <div class="section-title">Politician Leaderboard</div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div class="section-title">Politician Leaderboard</div>
+      <button class="btn-download" onclick="downloadLeaderboardCSV()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> CSV</button>
+    </div>
     <div class="filters" style="margin-bottom:20px">
       <select class="filter-select" id="lb-period" onchange="loadLeaderboard()">
         <option value="all">All Time</option>
@@ -564,7 +590,10 @@ DASHBOARD_HTML = """
 
   <!-- SCREENER TAB -->
   <div id="tab-screener" style="display:none">
-    <div class="section-title">Congressional Stock Screener</div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div class="section-title">Congressional Stock Screener</div>
+      <button class="btn-download" onclick="downloadScreenerCSV()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> CSV</button>
+    </div>
     <div class="filters" style="margin-bottom:20px">
       <select class="filter-select" id="sc-period" onchange="loadScreener()">
         <option value="7d">Last 7 Days</option>
@@ -578,7 +607,10 @@ DASHBOARD_HTML = """
 
   <!-- RECENT TRADES TAB -->
   <div id="tab-recent" style="display:none">
-    <div class="section-title">Latest Congressional Trades <span id="stats-badge" class="count-badge" style="display:none"></span></div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div class="section-title">Latest Congressional Trades <span id="stats-badge" class="count-badge" style="display:none"></span></div>
+      <button class="btn-download" onclick="downloadRecentCSV()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> CSV</button>
+    </div>
     <div class="filters" style="margin-bottom:20px">
       <select class="filter-select" id="r-member" onchange="filterRecent()" style="min-width:200px">
         <option value="">All Members</option>
@@ -622,7 +654,10 @@ DASHBOARD_HTML = """
 
   <!-- BROWSE TAB -->
   <div id="tab-browse" style="display:none">
-    <div class="section-title">Filter Trades</div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div class="section-title">Filter Trades</div>
+      <button class="btn-download" onclick="downloadBrowseCSV()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> CSV</button>
+    </div>
     <div class="filters">
       <input class="filter-input" id="f-member" placeholder="Member" style="width:180px">
       <input class="filter-input" id="f-ticker" placeholder="Ticker" style="width:100px">
@@ -1122,6 +1157,103 @@ function escapeHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+// ---- CSV DOWNLOAD ----
+function escapeCsvField(val) {
+  if (val === null || val === undefined) return '';
+  const s = String(val);
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+function downloadCSV(rows, headers, filename) {
+  let csv = headers.map(escapeCsvField).join(',') + '\n';
+  rows.forEach(r => {
+    csv += headers.map(h => escapeCsvField(r[h] ?? '')).join(',') + '\n';
+  });
+  const blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Store fetched data for CSV export
+window._csvData = {};
+
+async function downloadDashboardCSV() {
+  try {
+    // Export all trades as CSV
+    const resp = await fetch('/api/trades?limit=50000');
+    const trades = await resp.json();
+    const headers = ['member_name','party','chamber','transaction_type','ticker','asset_description','amount_low','amount_high','transaction_date','filing_date','owner','sector','industry'];
+    downloadCSV(trades, headers, 'nancy-all-trades.csv');
+  } catch(e) { alert('Failed to export: ' + e.message); }
+}
+
+async function downloadRecentCSV() {
+  try {
+    const member = document.getElementById('r-member').value;
+    const ticker = document.getElementById('r-ticker').value;
+    const txType = document.getElementById('r-type').value;
+    const params = new URLSearchParams();
+    if (member) params.set('member', member);
+    if (ticker) params.set('ticker', ticker);
+    if (txType) params.set('transaction_type', txType);
+    params.set('limit', '10000');
+    const resp = await fetch('/api/trades/recent?' + params.toString());
+    const trades = await resp.json();
+    const headers = ['member_name','party','chamber','transaction_type','ticker','asset_description','amount_low','amount_high','transaction_date','filing_date','owner','sector','industry'];
+    downloadCSV(trades, headers, 'nancy-recent-trades.csv');
+  } catch(e) { alert('Failed to export: ' + e.message); }
+}
+
+async function downloadLeaderboardCSV() {
+  try {
+    const period = document.getElementById('lb-period').value;
+    const chamber = document.getElementById('lb-chamber').value;
+    const params = new URLSearchParams();
+    params.set('period', period);
+    if (chamber) params.set('chamber', chamber);
+    const resp = await fetch('/api/leaderboard?' + params.toString());
+    const rows = await resp.json();
+    const headers = ['rank','name','chamber','party','state','trade_count','buys','sells','total_volume','last_trade_date'];
+    downloadCSV(rows, headers, 'nancy-leaderboard.csv');
+  } catch(e) { alert('Failed to export: ' + e.message); }
+}
+
+async function downloadScreenerCSV() {
+  try {
+    const period = document.getElementById('sc-period').value;
+    const resp = await fetch('/api/screener?period=' + period);
+    const rows = await resp.json();
+    const headers = ['ticker','sector','signal','score','trade_count','unique_members','buys','sells','total_volume','last_trade_date'];
+    downloadCSV(rows, headers, 'nancy-screener.csv');
+  } catch(e) { alert('Failed to export: ' + e.message); }
+}
+
+async function downloadBrowseCSV() {
+  try {
+    const params = new URLSearchParams();
+    const m = document.getElementById('f-member').value.trim();
+    const t = document.getElementById('f-ticker').value.trim();
+    const s = document.getElementById('f-sector').value;
+    const tt = document.getElementById('f-type').value;
+    if (m) params.set('member', m);
+    if (t) params.set('ticker', t);
+    if (s) params.set('sector', s);
+    if (tt) params.set('transaction_type', tt);
+    params.set('limit', '10000');
+    const resp = await fetch('/api/trades?' + params.toString());
+    const trades = await resp.json();
+    const headers = ['member_name','party','chamber','transaction_type','ticker','asset_description','amount_low','amount_high','transaction_date','filing_date','owner','sector','industry'];
+    downloadCSV(trades, headers, 'nancy-browse-trades.csv');
+  } catch(e) { alert('Failed to export: ' + e.message); }
 }
 </script>
 </body>
