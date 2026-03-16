@@ -27,13 +27,47 @@ def get_or_create_member(db: Session, name: str, chamber: str, **kwargs) -> Memb
 
 
 def enrich_sector(db: Session, ticker: str | None) -> tuple[str | None, str | None]:
-    """Look up sector/industry for a ticker."""
+    """Look up sector/industry for a ticker. Falls back to yfinance API if not in seed data."""
     if not ticker:
         return None, None
-    sector = db.query(Sector).filter(Sector.ticker == ticker).first()
+    sector_row = db.query(Sector).filter(Sector.ticker == ticker).first()
+    if sector_row:
+        return sector_row.sector, sector_row.industry
+
+    # Fallback: try yfinance for unknown tickers
+    sector, industry, company_name = _lookup_yfinance(ticker)
     if sector:
-        return sector.sector, sector.industry
+        # Cache it in the sectors table for future lookups
+        new_sector = Sector(
+            ticker=ticker,
+            sector=sector,
+            industry=industry,
+            company_name=company_name,
+        )
+        try:
+            db.add(new_sector)
+            db.flush()
+            logger.info(f"Auto-enriched sector for {ticker}: {sector} / {industry}")
+        except Exception:
+            db.rollback()  # Duplicate ticker race condition
+        return sector, industry
+
     return None, None
+
+
+def _lookup_yfinance(ticker: str) -> tuple[str | None, str | None, str | None]:
+    """Look up sector/industry from yfinance. Returns (sector, industry, company_name)."""
+    try:
+        import yfinance as yf
+        info = yf.Ticker(ticker).info
+        sector = info.get("sector")
+        industry = info.get("industry")
+        company_name = info.get("shortName") or info.get("longName")
+        if sector:
+            return sector, industry, company_name
+    except Exception as e:
+        logger.debug(f"yfinance lookup failed for {ticker}: {e}")
+    return None, None, None
 
 
 def trade_exists(db: Session, member_id: int, trade_data: dict) -> bool:

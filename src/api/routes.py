@@ -9,8 +9,15 @@ from sqlalchemy.orm import Session
 from sqlalchemy import case, func
 
 from src.db.database import get_db
-from src.db.models import Member, Subscriber, Trade
+from src.db.models import Committee, Member, MemberCommittee, Subscriber, Trade
+from src.services.committee_service import (
+    check_committee_correlation,
+    get_committee_members,
+    get_committee_trades,
+    get_member_committees,
+)
 from src.services.query_service import natural_language_query
+from src.services.repeat_buyer_service import detect_repeat_buyers
 from src.services.trade_service import search_trades
 
 router = APIRouter(prefix="/api")
@@ -394,6 +401,34 @@ def member_profile(member_name: str, db: Session = Depends(get_db)):
         sector_counts[s] = sector_counts.get(s, 0) + 1
     sectors = sorted(sector_counts.items(), key=lambda x: -x[1])
 
+    # Committee assignments
+    committees = get_member_committees(db, member.id)
+
+    # Committee-correlated trades
+    correlated_trades = []
+    for t in trades:
+        correlation = check_committee_correlation(db, t)
+        if correlation:
+            correlated_trades.append({
+                "ticker": t.ticker,
+                "sector": t.sector,
+                "transaction_type": t.transaction_type,
+                "transaction_date": t.transaction_date.isoformat() if t.transaction_date else None,
+                "amount_low": t.amount_low,
+                "amount_high": t.amount_high,
+                "matching_committees": correlation["matching_committees"],
+            })
+
+    # Repeat buys (same ticker purchased 2+ times in 180 days)
+    repeat_buys: dict[str, int] = {}
+    purchase_tickers = [
+        t.ticker for t in trades
+        if t.ticker and t.transaction_type and "purchase" in t.transaction_type.lower()
+    ]
+    for ticker in purchase_tickers:
+        repeat_buys[ticker] = repeat_buys.get(ticker, 0) + 1
+    repeat_buys = {k: v for k, v in repeat_buys.items() if v >= 2}
+
     return {
         "name": member.name,
         "chamber": member.chamber,
@@ -405,6 +440,12 @@ def member_profile(member_name: str, db: Session = Depends(get_db)):
         "total_volume": round(total_volume),
         "top_tickers": [{"ticker": t, "count": c} for t, c in top_tickers],
         "sectors": [{"sector": s, "count": c} for s, c in sectors],
+        "committees": committees,
+        "committee_correlated_trades": correlated_trades,
+        "repeat_buys": [
+            {"ticker": t, "purchase_count": c}
+            for t, c in sorted(repeat_buys.items(), key=lambda x: -x[1])
+        ],
         "trades": [
             TradeOut(
                 id=t.id,
@@ -515,6 +556,97 @@ def stock_screener(
     return results
 
 
+@router.get("/committees")
+def list_committees(chamber: str | None = None, db: Session = Depends(get_db)):
+    """List all committees with member counts."""
+    query = db.query(Committee)
+    if chamber:
+        query = query.filter(Committee.chamber == chamber)
+    committees = query.order_by(Committee.chamber, Committee.name).all()
+
+    results = []
+    for c in committees:
+        member_count = (
+            db.query(func.count(MemberCommittee.id))
+            .filter(MemberCommittee.committee_id == c.id)
+            .scalar()
+        )
+        results.append({
+            "code": c.code,
+            "name": c.name,
+            "chamber": c.chamber,
+            "member_count": member_count or 0,
+        })
+    return results
+
+
+@router.get("/committees/{committee_code}")
+def committee_detail(committee_code: str, db: Session = Depends(get_db)):
+    """Get committee details with members and their trades."""
+    committee = db.query(Committee).filter(Committee.code == committee_code).first()
+    if not committee:
+        raise HTTPException(status_code=404, detail="Committee not found")
+
+    members = get_committee_members(db, committee_code)
+    return {
+        "code": committee.code,
+        "name": committee.name,
+        "chamber": committee.chamber,
+        "members": members,
+    }
+
+
+@router.get("/committees/{committee_code}/trades")
+def committee_trades_endpoint(
+    committee_code: str,
+    days: int = 90,
+    db: Session = Depends(get_db),
+):
+    """Get trades by committee members, with sector-correlation flags.
+
+    This is the Robert Latta signal — Energy & Commerce member buys Exxon.
+    """
+    committee = db.query(Committee).filter(Committee.code == committee_code).first()
+    if not committee:
+        raise HTTPException(status_code=404, detail="Committee not found")
+
+    trades = get_committee_trades(db, committee_code, days=days)
+
+    # Stats
+    total = len(trades)
+    correlated = sum(1 for t in trades if t["committee_correlated"])
+
+    return {
+        "committee_name": committee.name,
+        "committee_code": committee.code,
+        "period_days": days,
+        "total_trades": total,
+        "correlated_trades": correlated,
+        "correlation_rate": round(correlated / total * 100, 1) if total else 0,
+        "trades": trades,
+    }
+
+
+@router.get("/repeat-buyers")
+def repeat_buyers(
+    days: int = 180,
+    min_purchases: int = 2,
+    db: Session = Depends(get_db),
+):
+    """Find members who have bought the same stock multiple times.
+
+    Conviction signal: repeat buying = high confidence in the trade.
+    """
+    return detect_repeat_buyers(db, lookback_days=days, min_purchases=min_purchases)
+
+
+@router.post("/scrape-committees")
+def trigger_committee_scrape(background_tasks: BackgroundTasks):
+    """Scrape committee rosters and ingest assignments."""
+    background_tasks.add_task(_run_committee_scrape)
+    return {"message": "Committee scrape started in background."}
+
+
 @router.post("/subscribe")
 def subscribe(req: SubscribeRequest, db: Session = Depends(get_db)):
     existing = db.query(Subscriber).filter(Subscriber.email == req.email).first()
@@ -550,6 +682,29 @@ def trigger_emails(db: Session = Depends(get_db)):
 
     send_daily_notifications(db)
     return {"message": "Email job completed"}
+
+
+def _run_committee_scrape():
+    """Scrape committee rosters and ingest into DB."""
+    import asyncio
+    import logging
+
+    from src.db.database import SessionLocal
+    from src.scrapers.committees import scrape_committees
+    from src.services.committee_service import ingest_committees
+
+    logger = logging.getLogger(__name__)
+    db = SessionLocal()
+    try:
+        loop = asyncio.new_event_loop()
+        raw = loop.run_until_complete(scrape_committees())
+        loop.close()
+        new_count = ingest_committees(db, raw)
+        logger.info(f"Committee scrape complete: {new_count} new assignments")
+    except Exception as e:
+        logger.error(f"Committee scrape failed: {e}", exc_info=True)
+    finally:
+        db.close()
 
 
 def _run_scrape(mode: str = "daily"):
