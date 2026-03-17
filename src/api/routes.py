@@ -22,6 +22,10 @@ from src.services.trade_service import search_trades
 
 router = APIRouter(prefix="/api")
 
+# Track last scrape time for health endpoint
+_last_scrape_at: datetime | None = None
+_last_scrape_new: int = 0
+
 
 # --- Schemas ---
 
@@ -67,6 +71,38 @@ class MemberOut(BaseModel):
 
 
 # --- Endpoints ---
+
+
+@router.get("/health")
+def health_check(db: Session = Depends(get_db)):
+    """Health check: last scrape time, trade counts, DB status."""
+    from datetime import timedelta
+
+    total_trades = db.query(Trade).count()
+    total_members = db.query(Member).count()
+    latest_trade = (
+        db.query(Trade)
+        .order_by(Trade.filing_date.desc().nullslast())
+        .first()
+    )
+    latest_filing = latest_trade.filing_date.isoformat() if latest_trade and latest_trade.filing_date else None
+    latest_tx = latest_trade.transaction_date.isoformat() if latest_trade and latest_trade.transaction_date else None
+
+    # Trades added in last 24h
+    yesterday = datetime.utcnow() - timedelta(hours=24)
+    recent_ingested = db.query(Trade).filter(Trade.created_at >= yesterday).count() if hasattr(Trade, "created_at") else None
+
+    return {
+        "status": "ok",
+        "db": "connected",
+        "total_trades": total_trades,
+        "total_members": total_members,
+        "latest_filing_date": latest_filing,
+        "latest_transaction_date": latest_tx,
+        "last_scrape_at": _last_scrape_at.isoformat() if _last_scrape_at else None,
+        "last_scrape_new_trades": _last_scrape_new,
+        "scrape_schedule": "06:00 & 18:00 UTC + on deploy",
+    }
 
 
 @router.get("/trades", response_model=list[TradeOut])
@@ -753,6 +789,12 @@ def _run_scrape(mode: str = "daily"):
 
         all_trades = capitol_trades + senate_trades + house_trades + finnhub_trades
         new_count = ingest_trades(db, all_trades)
+
+        # Update health tracking
+        global _last_scrape_at, _last_scrape_new
+        _last_scrape_at = datetime.utcnow()
+        _last_scrape_new = new_count
+
         logger.info(
             f"Background scrape complete ({mode}): {new_count} new trades "
             f"(capitol={len(capitol_trades)}, senate={len(senate_trades)}, "

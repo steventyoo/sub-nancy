@@ -77,8 +77,16 @@ def startup():
             "cron",
             hour=6,
             minute=0,
-            id="scrape_job",
-            name="Scrape congressional disclosures",
+            id="scrape_job_am",
+            name="Scrape congressional disclosures (AM)",
+        )
+        _scheduler.add_job(
+            run_scrape_job,
+            "cron",
+            hour=18,
+            minute=0,
+            id="scrape_job_pm",
+            name="Scrape congressional disclosures (PM)",
         )
         _scheduler.add_job(
             run_email_job,
@@ -89,7 +97,7 @@ def startup():
         )
         _scheduler.start()
         logger.info(
-            "Scheduler started: scraping daily at 06:00 UTC, "
+            "Scheduler started: scraping at 06:00 & 18:00 UTC, "
             f"emails at {settings.email_hour}:00 UTC"
         )
 

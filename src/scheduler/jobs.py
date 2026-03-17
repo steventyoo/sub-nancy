@@ -42,6 +42,15 @@ def run_scrape_job():
         all_trades = capitol_trades + senate_trades + house_trades + finnhub_trades
         new_count = ingest_trades(db, all_trades)
         logger.info(f"Scheduled scrape complete: {new_count} new trades ingested")
+
+        # Update health tracking in routes module
+        try:
+            from datetime import datetime
+            import src.api.routes as routes_mod
+            routes_mod._last_scrape_at = datetime.utcnow()
+            routes_mod._last_scrape_new = new_count
+        except Exception:
+            pass
     except Exception as e:
         logger.error(f"Scrape job failed: {e}", exc_info=True)
     finally:
