@@ -163,6 +163,16 @@ async def scrape_finnhub_congress(
                     f"{BASE_URL}/stock/congressional-trading", params=params
                 )
                 resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (401, 403):
+                    logger.warning(
+                        "Finnhub API key invalid or expired (HTTP %s) — skipping Finnhub scrape",
+                        e.response.status_code,
+                    )
+                    return all_trades
+                logger.error(f"Finnhub API error for {chunk_from}-{chunk_to}: {e}")
+                await asyncio.sleep(2)
+                continue
             except httpx.HTTPError as e:
                 logger.error(f"Finnhub API error for {chunk_from}-{chunk_to}: {e}")
                 await asyncio.sleep(2)

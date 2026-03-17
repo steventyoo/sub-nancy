@@ -726,7 +726,7 @@ def _run_scrape(mode: str = "daily"):
 
     logger = logging.getLogger(__name__)
 
-    ct_pages = 400 if mode == "backfill" else 10
+    ct_pages = 400 if mode == "backfill" else 25
     logger.info(f"Background scrape started (mode={mode}, capitol_pages={ct_pages})")
 
     db = SessionLocal()

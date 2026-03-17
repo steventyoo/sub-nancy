@@ -71,10 +71,12 @@ def startup():
 
         global _scheduler
         _scheduler = BackgroundScheduler()
+        # Fixed daily cron (not interval) so deploys/restarts don't reset the timer
         _scheduler.add_job(
             run_scrape_job,
-            "interval",
-            hours=settings.scrape_interval_hours,
+            "cron",
+            hour=6,
+            minute=0,
             id="scrape_job",
             name="Scrape congressional disclosures",
         )
@@ -87,9 +89,14 @@ def startup():
         )
         _scheduler.start()
         logger.info(
-            f"Scheduler started: scraping every {settings.scrape_interval_hours}h, "
+            "Scheduler started: scraping daily at 06:00 UTC, "
             f"emails at {settings.email_hour}:00 UTC"
         )
+
+        # Run a scrape immediately on startup so data is never stale after a deploy
+        import threading
+        threading.Thread(target=run_scrape_job, daemon=True).start()
+        logger.info("Startup scrape kicked off in background thread")
 
 
 _scheduler = None

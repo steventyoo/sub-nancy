@@ -100,7 +100,7 @@ async def scrape_house_disclosures(year: int | None = None) -> list[dict]:
         rows = table.find_all("tr")[1:]  # Skip header row
         for row in rows:
             cols = row.find_all("td")
-            if len(cols) < 5:
+            if len(cols) < 4:
                 continue
 
             name = cols[0].get_text(strip=True)
@@ -114,14 +114,11 @@ async def scrape_house_disclosures(year: int | None = None) -> list[dict]:
             if link and link.get("href"):
                 pdf_url = BASE_URL + link["href"] if link["href"].startswith("/") else link["href"]
 
-            # Parse state/district from office field
+            # Parse state/district from office field (e.g. "GA12")
             state, district = None, None
             if office:
-                parts = office.split("-")
-                if len(parts) >= 1:
-                    state = parts[0].strip()[:2]
-                if len(parts) >= 2:
-                    district = parts[1].strip()
+                state = office[:2] if len(office) >= 2 else office
+                district = office[2:] if len(office) > 2 else None
 
             trade = {
                 "member_name": name,
