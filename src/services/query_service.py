@@ -29,15 +29,15 @@ Key values:
 - amount ranges are stored as numeric bounds (amount_low, amount_high)
   e.g. $1,001-$15,000 → amount_low=1001, amount_high=15000
 
-Dates are stored as datetime. Use date() for comparisons.
-The database is SQLite.
+Dates are stored as timestamp/datetime. Use CURRENT_DATE and INTERVAL for comparisons.
+The database is PostgreSQL.
 """
 
 SYSTEM_PROMPT = f"""You are a SQL query generator for a congressional stock trade database.
 
 {DB_SCHEMA}
 
-Given a natural language question, generate a SQLite SELECT query to answer it.
+Given a natural language question, generate a PostgreSQL SELECT query to answer it.
 Return ONLY a JSON object with two keys:
 - "sql": the SQL query string (SELECT only, no mutations)
 - "explanation": a brief explanation of what the query does
@@ -45,9 +45,9 @@ Return ONLY a JSON object with two keys:
 Rules:
 - ONLY generate SELECT statements. Never INSERT, UPDATE, DELETE, DROP, etc.
 - Always JOIN members and trades when member info is needed
-- Use LIKE for fuzzy name matching
+- Use ILIKE for case-insensitive name matching
 - For date ranges, interpret relative terms like "last month", "this year", "prior to" etc.
-  Use date('now') for current date in SQLite.
+  Use CURRENT_DATE for current date and INTERVAL for offsets (e.g. CURRENT_DATE - INTERVAL '30 days').
 - When asked about sectors like "defense stocks", filter on trades.sector or join with sectors table
 - Limit results to 50 unless the user asks for more
 - Order by transaction_date DESC by default
