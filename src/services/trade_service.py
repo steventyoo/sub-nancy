@@ -19,6 +19,8 @@ def get_or_create_member(db: Session, name: str, chamber: str, **kwargs) -> Memb
         member = Member(name=name, chamber=chamber, **kwargs)
         db.add(member)
         db.flush()
+        # Commit immediately so the member survives any later rollbacks
+        db.commit()
     else:
         # Update party if we have it now and didn't before
         if kwargs.get("party") and not member.party:
@@ -29,6 +31,9 @@ def get_or_create_member(db: Session, name: str, chamber: str, **kwargs) -> Memb
 def enrich_sector(db: Session, ticker: str | None) -> tuple[str | None, str | None]:
     """Look up sector/industry for a ticker. Falls back to yfinance API if not in seed data."""
     if not ticker:
+        return None, None
+    # Skip tickers that are clearly not stocks (crypto, special prefixes)
+    if ticker.startswith("$$") or len(ticker) > 10:
         return None, None
     sector_row = db.query(Sector).filter(Sector.ticker == ticker).first()
     if sector_row:
@@ -55,8 +60,18 @@ def enrich_sector(db: Session, ticker: str | None) -> tuple[str | None, str | No
     return None, None
 
 
+_yfinance_failed_cache: set[str] = set()
+
+
 def _lookup_yfinance(ticker: str) -> tuple[str | None, str | None, str | None]:
     """Look up sector/industry from yfinance. Returns (sector, industry, company_name)."""
+    # Skip tickers we've already failed on this session
+    if ticker in _yfinance_failed_cache:
+        return None, None, None
+    # Skip tickers with special characters that yfinance can't handle
+    if "/" in ticker or " " in ticker:
+        _yfinance_failed_cache.add(ticker)
+        return None, None, None
     try:
         import yfinance as yf
         info = yf.Ticker(ticker).info
@@ -65,7 +80,9 @@ def _lookup_yfinance(ticker: str) -> tuple[str | None, str | None, str | None]:
         company_name = info.get("shortName") or info.get("longName")
         if sector:
             return sector, industry, company_name
+        _yfinance_failed_cache.add(ticker)
     except Exception as e:
+        _yfinance_failed_cache.add(ticker)
         logger.debug(f"yfinance lookup failed for {ticker}: {e}")
     return None, None, None
 
@@ -105,54 +122,68 @@ def trade_exists(db: Session, member_id: int, trade_data: dict) -> bool:
 def ingest_trades(db: Session, raw_trades: list[dict]) -> int:
     """Ingest a list of scraped trades, deduplicating against existing records.
 
+    Commits in batches to avoid autoflush FK violations on large imports.
     Returns the count of new trades inserted.
     """
     new_count = 0
+    batch_size = 500
 
-    for raw in raw_trades:
-        member = get_or_create_member(
-            db,
-            name=raw["member_name"],
-            chamber=raw["chamber"],
-            state=raw.get("state"),
-            district=raw.get("district"),
-            party=raw.get("party"),
-        )
+    for i, raw in enumerate(raw_trades):
+        try:
+            with db.no_autoflush:
+                member = get_or_create_member(
+                    db,
+                    name=raw["member_name"],
+                    chamber=raw["chamber"],
+                    state=raw.get("state"),
+                    district=raw.get("district"),
+                    party=raw.get("party"),
+                )
 
-        sector, industry = enrich_sector(db, raw.get("ticker"))
+            sector, industry = enrich_sector(db, raw.get("ticker"))
 
-        trade_data = {
-            "ticker": raw.get("ticker"),
-            "transaction_date": raw.get("transaction_date"),
-            "transaction_type": raw.get("transaction_type"),
-            "amount_low": raw.get("amount_low"),
-            "amount_high": raw.get("amount_high"),
-            "asset_description": raw.get("asset_description"),
-            "filing_date": raw.get("filing_date"),
-            "owner": raw.get("owner"),
-        }
+            trade_data = {
+                "ticker": raw.get("ticker"),
+                "transaction_date": raw.get("transaction_date"),
+                "transaction_type": raw.get("transaction_type"),
+                "amount_low": raw.get("amount_low"),
+                "amount_high": raw.get("amount_high"),
+                "asset_description": raw.get("asset_description"),
+                "filing_date": raw.get("filing_date"),
+                "owner": raw.get("owner"),
+            }
 
-        if trade_exists(db, member.id, trade_data):
+            if trade_exists(db, member.id, trade_data):
+                continue
+
+            trade = Trade(
+                member_id=member.id,
+                transaction_date=raw.get("transaction_date"),
+                filing_date=raw.get("filing_date"),
+                ticker=raw.get("ticker"),
+                asset_description=raw.get("asset_description"),
+                asset_type=raw.get("asset_type"),
+                transaction_type=raw.get("transaction_type"),
+                amount_low=raw.get("amount_low"),
+                amount_high=raw.get("amount_high"),
+                owner=raw.get("owner"),
+                sector=sector,
+                industry=industry,
+                source_url=raw.get("source_url"),
+                raw_filing_url=raw.get("raw_filing_url"),
+            )
+            db.add(trade)
+            new_count += 1
+
+            # Commit in batches to keep session clean
+            if new_count % batch_size == 0:
+                db.commit()
+                logger.info(f"Batch commit: {new_count} new trades so far (processed {i + 1}/{len(raw_trades)})")
+
+        except Exception as e:
+            logger.warning(f"Skipping trade {i}: {e}")
+            db.rollback()
             continue
-
-        trade = Trade(
-            member_id=member.id,
-            transaction_date=raw.get("transaction_date"),
-            filing_date=raw.get("filing_date"),
-            ticker=raw.get("ticker"),
-            asset_description=raw.get("asset_description"),
-            asset_type=raw.get("asset_type"),
-            transaction_type=raw.get("transaction_type"),
-            amount_low=raw.get("amount_low"),
-            amount_high=raw.get("amount_high"),
-            owner=raw.get("owner"),
-            sector=sector,
-            industry=industry,
-            source_url=raw.get("source_url"),
-            raw_filing_url=raw.get("raw_filing_url"),
-        )
-        db.add(trade)
-        new_count += 1
 
     db.commit()
     logger.info(f"Ingested {new_count} new trades (out of {len(raw_trades)} scraped)")
@@ -180,6 +211,7 @@ def search_trades(
     date_to: datetime | None = None,
     limit: int = 100,
     offset: int = 0,
+    owner: str | None = None,
 ) -> list[Trade]:
     """Search trades with optional filters."""
     query = db.query(Trade).join(Member)
@@ -192,6 +224,8 @@ def search_trades(
         query = query.filter(Trade.sector.ilike(f"%{sector}%"))
     if transaction_type:
         query = query.filter(Trade.transaction_type.ilike(f"%{transaction_type}%"))
+    if owner:
+        query = query.filter(Trade.owner.ilike(f"%{owner}%"))
     if date_from:
         query = query.filter(Trade.transaction_date >= date_from)
     if date_to:

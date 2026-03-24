@@ -122,6 +122,105 @@ def clean_ticker(ticker_str: str | None) -> str | None:
     return ticker_str.split(":")[0].strip() or None
 
 
+def _extract_trade_array(chunk: str) -> list[dict] | None:
+    """Extract the trade JSON array from an RSC chunk using bracket counting.
+
+    The simple regex approach fails when text fields contain escaped quotes
+    (e.g. comment fields with \\"Other\\"). This function finds the array start
+    (by locating the first {"_issuerId" pattern) and then counts brackets to
+    find the matching closing bracket, ensuring we get valid JSON.
+    """
+    # Find the start of the trade array: [{"_issuerId"
+    arr_start = chunk.find('[{"_issuerId"')
+    if arr_start == -1:
+        return None
+
+    # Use bracket counting to find the end of the array
+    depth = 0
+    in_string = False
+    escape = False
+    i = arr_start
+
+    while i < len(chunk):
+        c = chunk[i]
+
+        if escape:
+            escape = False
+            i += 1
+            continue
+
+        if c == '\\':
+            escape = True
+            i += 1
+            continue
+
+        if c == '"' and not escape:
+            in_string = not in_string
+            i += 1
+            continue
+
+        if not in_string:
+            if c == '[':
+                depth += 1
+            elif c == ']':
+                depth -= 1
+                if depth == 0:
+                    # Found the matching close bracket
+                    raw = chunk[arr_start:i + 1]
+                    try:
+                        return json.loads(raw)
+                    except json.JSONDecodeError:
+                        # If full array fails, try extracting individual objects
+                        return _extract_trades_individually(chunk)
+
+        i += 1
+
+    # Bracket counting didn't find a match; fall back to individual extraction
+    return _extract_trades_individually(chunk)
+
+
+def _extract_trades_individually(chunk: str) -> list[dict] | None:
+    """Fallback: extract trade objects one at a time from the RSC chunk.
+
+    Finds each {"_issuerId"... pattern and attempts to parse it as JSON.
+    More resilient to malformed data in individual trade objects.
+    """
+    trades = []
+    # Find each trade object start
+    pattern = re.compile(r'\{"_issuerId"')
+    for m in pattern.finditer(chunk):
+        start = m.start()
+        # Use bracket counting to find the end of this object
+        depth = 0
+        in_str = False
+        esc = False
+        for j in range(start, min(start + 5000, len(chunk))):
+            c = chunk[j]
+            if esc:
+                esc = False
+                continue
+            if c == '\\':
+                esc = True
+                continue
+            if c == '"':
+                in_str = not in_str
+                continue
+            if not in_str:
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        raw = chunk[start:j + 1]
+                        try:
+                            trades.append(json.loads(raw))
+                        except json.JSONDecodeError:
+                            pass  # Skip malformed trade
+                        break
+
+    return trades if trades else None
+
+
 def extract_trades_from_html(html: str) -> list[dict]:
     """Extract trade data from Capitol Trades HTML.
 
@@ -143,14 +242,10 @@ def extract_trades_from_html(html: str) -> list[dict]:
             chunk = chunk.replace('\\"', '"').replace('\\n', '\n')
 
             # Find JSON array of trade objects
-            arr_match = re.search(
-                r'\[(\{"_issuerId.*?"value":\d+\}'
-                r'(?:,\{"_issuerId.*?"value":\d+\})*)\]',
-                chunk,
-                re.DOTALL,
-            )
-            if arr_match:
-                trade_list = json.loads(arr_match.group(0))
+            # Use a bracket-counting approach to find the array reliably,
+            # since the simple regex can fail when text fields contain quotes.
+            trade_list = _extract_trade_array(chunk)
+            if trade_list is not None:
                 logger.info(f"Extracted {len(trade_list)} trades from RSC data")
 
                 for tx in trade_list:
@@ -335,13 +430,89 @@ async def scrape_capitol_trades(
                     f"(total: {len(all_trades)})"
                 )
 
-            # If we got fewer than expected, we've reached the end
-            if len(page_trades) < page_size:
-                logger.info(f"Got {len(page_trades)} < {page_size} on page {page}, reached end")
+            # If we got significantly fewer than expected, we've likely reached the end.
+            # Use a threshold (< 50%) to avoid false stops when a few trades are
+            # skipped due to malformed data during extraction.
+            if len(page_trades) < page_size * 0.5:
+                logger.info(f"Got {len(page_trades)} < {page_size // 2} on page {page}, reached end")
                 break
 
             # Rate-limit delay: 0.5s between pages to avoid getting blocked
             await asyncio.sleep(0.5)
 
     logger.info(f"Total Capitol Trades scraped: {len(all_trades)} from {page} pages")
+
+    # Phase 2: Scrape per-politician filtered pages for top traders.
+    # The general /trades endpoint is sorted by filing date, so older trades
+    # from active politicians may not appear in the first N pages.
+    # Fetch the top politicians list and scrape their full history.
+    try:
+        top_politicians = await _get_top_politician_ids(client)
+        logger.info(f"Phase 2: scraping {len(top_politicians)} top politicians")
+        for pol_id, pol_name in top_politicians:
+            pol_trades = await _scrape_politician_trades(client, pol_id, page_size)
+            if pol_trades:
+                all_trades.extend(pol_trades)
+                logger.info(f"  {pol_name} ({pol_id}): {len(pol_trades)} trades")
+            await asyncio.sleep(0.5)
+    except Exception as e:
+        logger.error(f"Phase 2 politician scrape failed: {e}")
+
+    logger.info(f"Total Capitol Trades scraped (with politician fills): {len(all_trades)}")
+    return all_trades
+
+
+async def _get_top_politician_ids(client: httpx.AsyncClient) -> list[tuple[str, str]]:
+    """Get politician IDs from the Capitol Trades politicians page."""
+    politicians = []
+    try:
+        resp = await client.get("https://www.capitoltrades.com/politicians?pageSize=96")
+        resp.raise_for_status()
+        html = resp.text
+
+        # Extract politician data from RSC — look for _odId (politician objects)
+        match = re.search(
+            r'self\.__next_f\.push\(\[1,"(.*?_odId.*?)"\]\)', html, re.DOTALL
+        )
+        if match:
+            chunk = match.group(1).replace('\\"', '"').replace('\\n', '\n')
+            # Find politician objects with bioguideId
+            pols = re.findall(
+                r'"bioguideId":"([^"]+)".*?"firstName":"([^"]*)".*?"lastName":"([^"]*)"',
+                chunk,
+            )
+            for bio_id, first, last in pols:
+                politicians.append((bio_id, f"{first} {last}"))
+    except Exception as e:
+        logger.error(f"Failed to fetch politician list: {e}")
+
+    return politicians[:50]  # Cap at 50 politicians
+
+
+async def _scrape_politician_trades(
+    client: httpx.AsyncClient,
+    politician_id: str,
+    page_size: int = 96,
+) -> list[dict]:
+    """Scrape all trades for a specific politician using the filtered endpoint."""
+    all_trades = []
+    for page in range(1, 20):  # Max 20 pages per politician (~1920 trades)
+        url = f"{BASE_URL}?politician={politician_id}&page={page}&pageSize={page_size}"
+        try:
+            resp = await client.get(url)
+            resp.raise_for_status()
+        except httpx.HTTPError:
+            break
+
+        page_trades = extract_trades_from_html(resp.text)
+        if not page_trades:
+            break
+
+        all_trades.extend(page_trades)
+
+        if len(page_trades) < page_size * 0.5:
+            break
+
+        await asyncio.sleep(0.3)
+
     return all_trades

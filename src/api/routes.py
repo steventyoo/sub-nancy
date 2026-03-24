@@ -111,6 +111,7 @@ def list_trades(
     ticker: str | None = None,
     sector: str | None = None,
     transaction_type: str | None = None,
+    owner: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     limit: int = 100,
@@ -120,7 +121,7 @@ def list_trades(
     df = datetime.strptime(date_from, "%Y-%m-%d") if date_from else None
     dt = datetime.strptime(date_to, "%Y-%m-%d") if date_to else None
 
-    trades = search_trades(db, member, ticker, sector, transaction_type, df, dt, limit, offset)
+    trades = search_trades(db, member, ticker, sector, transaction_type, df, dt, limit, offset, owner=owner)
     results = []
     for t in trades:
         results.append(

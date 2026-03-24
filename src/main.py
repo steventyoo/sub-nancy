@@ -686,6 +686,10 @@ DASHBOARD_HTML = """
         <option value="">All Types</option>
         <option>Purchase</option><option>Sale</option>
       </select>
+      <select class="filter-select" id="f-owner">
+        <option value="">All Owners</option>
+        <option>Self</option><option>Spouse</option><option>Joint</option><option>Child</option>
+      </select>
       <button class="btn btn-primary" onclick="browseTrades()">Search</button>
     </div>
     <div class="results-section" id="browse-results">
@@ -868,10 +872,12 @@ async function browseTrades() {
   const t = document.getElementById('f-ticker').value.trim();
   const s = document.getElementById('f-sector').value;
   const tt = document.getElementById('f-type').value;
+  const ow = document.getElementById('f-owner').value;
   if (m) params.set('member', m);
   if (t) params.set('ticker', t);
   if (s) params.set('sector', s);
   if (tt) params.set('transaction_type', tt);
+  if (ow) params.set('owner', ow);
   params.set('limit', '50');
 
   const res = document.getElementById('browse-results');
@@ -934,7 +940,7 @@ function partyBadge(party) {
 
 function renderTradeTable(trades) {
   let h = '<div style="overflow-x:auto"><table class="trades-table"><thead><tr>';
-  h += '<th>Member</th><th>Type</th><th>Ticker</th><th>Asset</th><th>Amount</th><th>Trade Date</th><th>Filed</th><th>Sector</th>';
+  h += '<th>Member</th><th>Type</th><th>Ticker</th><th>Asset</th><th>Amount</th><th>Owner</th><th>Trade Date</th><th>Filed</th><th>Sector</th>';
   h += '</tr></thead><tbody>';
   trades.forEach(t => {
     const type = t.transaction_type || '';
@@ -948,6 +954,7 @@ function renderTradeTable(trades) {
     h += '<td><strong>' + escapeHtml(t.ticker || 'N/A') + '</strong></td>';
     h += '<td>' + escapeHtml((t.asset_description || '').substring(0, 40)) + '</td>';
     h += '<td>' + amt + '</td>';
+    h += '<td>' + escapeHtml(t.owner || '') + '</td>';
     h += '<td>' + txDate + '</td>';
     h += '<td style="color:var(--gray-light);font-size:11px">' + fileDate + '</td>';
     h += '<td>' + escapeHtml(t.sector || '') + '</td>';
