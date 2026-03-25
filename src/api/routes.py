@@ -236,8 +236,13 @@ def trade_stats(db: Session = Depends(get_db)):
 
 @router.post("/query")
 async def query_trades(req: QueryRequest, db: Session = Depends(get_db)):
-    result = await natural_language_query(db, req.question)
-    return result
+    try:
+        result = await natural_language_query(db, req.question)
+        return result
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Query endpoint error: {e}")
+        return {"error": f"Query failed: {str(e)}"}
 
 
 @router.get("/members", response_model=list[MemberOut])

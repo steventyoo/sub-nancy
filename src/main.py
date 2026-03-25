@@ -22,7 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Nancy the Ripper",
+    title="Subversive ETF",
     description="Congressional stock trade tracker with NL queries and email alerts",
     version="0.1.0",
 )
@@ -48,7 +48,7 @@ async def basic_auth_middleware(request: Request, call_next):
 
     return Response(
         status_code=401,
-        headers={"WWW-Authenticate": 'Basic realm="Nancy the Ripper"'},
+        headers={"WWW-Authenticate": 'Basic realm="Subversive ETF"'},
         content="Unauthorized",
     )
 
@@ -127,7 +127,7 @@ DASHBOARD_HTML = """
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Nancy the Ripper — Congressional Trade Tracker</title>
+<title>Subversive ETF — Congressional Trade Tracker</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -530,7 +530,7 @@ DASHBOARD_HTML = """
 <body>
 
 <div class="header">
-  <h1>NANCY <span>THE RIPPER</span></h1>
+  <h1>SUBVERSIVE <span>ETF</span></h1>
   <div class="header-meta">Congressional Trade Tracker</div>
 </div>
 
@@ -714,8 +714,15 @@ DASHBOARD_HTML = """
 </div>
 
 <div class="footer">
-  <div class="footer-text">Nancy the Ripper &copy; 2026</div>
+  <div class="footer-text">Subversive ETF &copy; 2026</div>
   <div class="footer-text">Data from Senate &amp; Capitol Trades<span class="count-badge" id="footer-count">Loading...</span></div>
+  <div class="footer-sources" style="margin-top:12px;font-size:11px;opacity:0.7;line-height:1.8">
+    <div style="font-weight:600;margin-bottom:4px;letter-spacing:1px;text-transform:uppercase">Data Sources</div>
+    <div><a href="https://www.capitoltrades.com" target="_blank" style="color:inherit">Capitol Trades</a> — Primary source for House &amp; Senate trades</div>
+    <div><a href="https://github.com/timothycarambat/senate-stock-watcher-data" target="_blank" style="color:inherit">Senate Stock Watcher</a> — Historical Senate financial disclosures</div>
+    <div><a href="https://clerk.house.gov" target="_blank" style="color:inherit">House Clerk</a> — Official House PTR filing metadata</div>
+    <div><a href="https://finnhub.io" target="_blank" style="color:inherit">Finnhub</a> — Cross-reference congressional trading data</div>
+  </div>
 </div>
 
 <script>
@@ -843,6 +850,10 @@ async function askQuestion() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({question: q})
     });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || ('Server error ' + resp.status));
+    }
     const data = await resp.json();
     let html = '';
     if (data.error) {
@@ -1214,7 +1225,7 @@ async function downloadDashboardCSV() {
     const resp = await fetch('/api/trades?limit=50000');
     const trades = await resp.json();
     const headers = ['member_name','party','chamber','transaction_type','ticker','asset_description','amount_low','amount_high','transaction_date','filing_date','owner','sector','industry'];
-    downloadCSV(trades, headers, 'nancy-all-trades.csv');
+    downloadCSV(trades, headers, 'subversive-all-trades.csv');
   } catch(e) { alert('Failed to export: ' + e.message); }
 }
 
@@ -1231,7 +1242,7 @@ async function downloadRecentCSV() {
     const resp = await fetch('/api/trades/recent?' + params.toString());
     const trades = await resp.json();
     const headers = ['member_name','party','chamber','transaction_type','ticker','asset_description','amount_low','amount_high','transaction_date','filing_date','owner','sector','industry'];
-    downloadCSV(trades, headers, 'nancy-recent-trades.csv');
+    downloadCSV(trades, headers, 'subversive-recent-trades.csv');
   } catch(e) { alert('Failed to export: ' + e.message); }
 }
 
@@ -1245,7 +1256,7 @@ async function downloadLeaderboardCSV() {
     const resp = await fetch('/api/leaderboard?' + params.toString());
     const rows = await resp.json();
     const headers = ['rank','name','chamber','party','state','trade_count','buys','sells','total_volume','last_trade_date'];
-    downloadCSV(rows, headers, 'nancy-leaderboard.csv');
+    downloadCSV(rows, headers, 'subversive-leaderboard.csv');
   } catch(e) { alert('Failed to export: ' + e.message); }
 }
 
@@ -1255,7 +1266,7 @@ async function downloadScreenerCSV() {
     const resp = await fetch('/api/screener?period=' + period);
     const rows = await resp.json();
     const headers = ['ticker','sector','signal','score','trade_count','unique_members','buys','sells','total_volume','last_trade_date'];
-    downloadCSV(rows, headers, 'nancy-screener.csv');
+    downloadCSV(rows, headers, 'subversive-screener.csv');
   } catch(e) { alert('Failed to export: ' + e.message); }
 }
 
@@ -1274,7 +1285,7 @@ async function downloadBrowseCSV() {
     const resp = await fetch('/api/trades?' + params.toString());
     const trades = await resp.json();
     const headers = ['member_name','party','chamber','transaction_type','ticker','asset_description','amount_low','amount_high','transaction_date','filing_date','owner','sector','industry'];
-    downloadCSV(trades, headers, 'nancy-browse-trades.csv');
+    downloadCSV(trades, headers, 'subversive-browse-trades.csv');
   } catch(e) { alert('Failed to export: ' + e.message); }
 }
 </script>
