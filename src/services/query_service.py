@@ -56,10 +56,10 @@ Rules:
 
 async def natural_language_query(db: Session, question: str) -> dict:
     """Take a natural language question, generate SQL via Claude, execute it, and return results."""
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     # Step 1: Generate SQL from the question
-    response = client.messages.create(
+    response = await client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=1024,
         system=SYSTEM_PROMPT,
@@ -121,7 +121,7 @@ async def natural_language_query(db: Session, question: str) -> dict:
         }
 
     # For smaller sets, ask Claude to summarize
-    format_response = client.messages.create(
+    format_response = await client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=1024,
         messages=[
