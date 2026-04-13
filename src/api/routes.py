@@ -80,13 +80,18 @@ def health_check(db: Session = Depends(get_db)):
 
     total_trades = db.query(Trade).count()
     total_members = db.query(Member).count()
-    latest_trade = (
+    latest_by_filing = (
         db.query(Trade)
         .order_by(Trade.filing_date.desc().nullslast())
         .first()
     )
-    latest_filing = latest_trade.filing_date.isoformat() if latest_trade and latest_trade.filing_date else None
-    latest_tx = latest_trade.transaction_date.isoformat() if latest_trade and latest_trade.transaction_date else None
+    latest_by_tx = (
+        db.query(Trade)
+        .order_by(Trade.transaction_date.desc().nullslast())
+        .first()
+    )
+    latest_filing = latest_by_filing.filing_date.isoformat() if latest_by_filing and latest_by_filing.filing_date else None
+    latest_tx = latest_by_tx.transaction_date.isoformat() if latest_by_tx and latest_by_tx.transaction_date else None
 
     # Trades added in last 24h
     yesterday = datetime.utcnow() - timedelta(hours=24)
