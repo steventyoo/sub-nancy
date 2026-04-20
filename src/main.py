@@ -638,6 +638,17 @@ DASHBOARD_HTML = """
         <option value="Purchase">Purchase</option>
         <option value="Sale">Sale</option>
       </select>
+      <select class="filter-select" id="r-party" onchange="filterRecent()">
+        <option value="">All Parties</option>
+        <option value="Democrat">Democrat</option>
+        <option value="Republican">Republican</option>
+        <option value="Independent">Independent</option>
+      </select>
+      <select class="filter-select" id="r-chamber" onchange="filterRecent()">
+        <option value="">All Chambers</option>
+        <option value="House">House</option>
+        <option value="Senate">Senate</option>
+      </select>
       <button class="btn btn-primary" onclick="clearFilters()" style="font-size:11px;padding:10px 18px">Clear</button>
     </div>
     <div class="results-section" id="recent-results">
@@ -689,6 +700,17 @@ DASHBOARD_HTML = """
       <select class="filter-select" id="f-owner">
         <option value="">All Owners</option>
         <option>Self</option><option>Spouse</option><option>Joint</option><option>Child</option>
+      </select>
+      <select class="filter-select" id="f-party">
+        <option value="">All Parties</option>
+        <option value="Democrat">Democrat</option>
+        <option value="Republican">Republican</option>
+        <option value="Independent">Independent</option>
+      </select>
+      <select class="filter-select" id="f-chamber">
+        <option value="">All Chambers</option>
+        <option value="House">House</option>
+        <option value="Senate">Senate</option>
       </select>
       <button class="btn btn-primary" onclick="browseTrades()">Search</button>
     </div>
@@ -801,10 +823,14 @@ async function filterRecent() {
   const member = document.getElementById('r-member').value;
   const ticker = document.getElementById('r-ticker').value;
   const txType = document.getElementById('r-type').value;
+  const party = document.getElementById('r-party').value;
+  const chamber = document.getElementById('r-chamber').value;
   const params = new URLSearchParams();
   if (member) params.set('member', member);
   if (ticker) params.set('ticker', ticker);
   if (txType) params.set('transaction_type', txType);
+  if (party) params.set('party', party);
+  if (chamber) params.set('chamber', chamber);
   params.set('limit', '50');
   const res = document.getElementById('recent-results');
   res.innerHTML = '<div class="loading"><span class="spinner"></span> Filtering...</div>';
@@ -825,6 +851,8 @@ function clearFilters() {
   document.getElementById('r-member').value = '';
   document.getElementById('r-ticker').value = '';
   document.getElementById('r-type').value = '';
+  document.getElementById('r-party').value = '';
+  document.getElementById('r-chamber').value = '';
   loadRecent();
 }
 
@@ -884,11 +912,15 @@ async function browseTrades() {
   const s = document.getElementById('f-sector').value;
   const tt = document.getElementById('f-type').value;
   const ow = document.getElementById('f-owner').value;
+  const pt = document.getElementById('f-party').value;
+  const ch = document.getElementById('f-chamber').value;
   if (m) params.set('member', m);
   if (t) params.set('ticker', t);
   if (s) params.set('sector', s);
   if (tt) params.set('transaction_type', tt);
   if (ow) params.set('owner', ow);
+  if (pt) params.set('party', pt);
+  if (ch) params.set('chamber', ch);
   params.set('limit', '50');
 
   const res = document.getElementById('browse-results');
@@ -1277,10 +1309,16 @@ async function downloadBrowseCSV() {
     const t = document.getElementById('f-ticker').value.trim();
     const s = document.getElementById('f-sector').value;
     const tt = document.getElementById('f-type').value;
+    const ow = document.getElementById('f-owner').value;
+    const pt = document.getElementById('f-party').value;
+    const ch = document.getElementById('f-chamber').value;
     if (m) params.set('member', m);
     if (t) params.set('ticker', t);
     if (s) params.set('sector', s);
     if (tt) params.set('transaction_type', tt);
+    if (ow) params.set('owner', ow);
+    if (pt) params.set('party', pt);
+    if (ch) params.set('chamber', ch);
     params.set('limit', '10000');
     const resp = await fetch('/api/trades?' + params.toString());
     const trades = await resp.json();

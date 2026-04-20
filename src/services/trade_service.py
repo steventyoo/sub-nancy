@@ -212,12 +212,18 @@ def search_trades(
     limit: int = 100,
     offset: int = 0,
     owner: str | None = None,
+    party: str | None = None,
+    chamber: str | None = None,
 ) -> list[Trade]:
     """Search trades with optional filters."""
     query = db.query(Trade).join(Member)
 
     if member_name:
         query = query.filter(Member.name.ilike(f"%{member_name}%"))
+    if party:
+        query = query.filter(Member.party.ilike(f"%{party}%"))
+    if chamber:
+        query = query.filter(Member.chamber == chamber)
     if ticker:
         query = query.filter(Trade.ticker == ticker.upper())
     if sector:

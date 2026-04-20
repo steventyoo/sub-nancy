@@ -117,6 +117,8 @@ def list_trades(
     sector: str | None = None,
     transaction_type: str | None = None,
     owner: str | None = None,
+    party: str | None = None,
+    chamber: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     limit: int = 100,
@@ -126,7 +128,10 @@ def list_trades(
     df = datetime.strptime(date_from, "%Y-%m-%d") if date_from else None
     dt = datetime.strptime(date_to, "%Y-%m-%d") if date_to else None
 
-    trades = search_trades(db, member, ticker, sector, transaction_type, df, dt, limit, offset, owner=owner)
+    trades = search_trades(
+        db, member, ticker, sector, transaction_type, df, dt, limit, offset,
+        owner=owner, party=party, chamber=chamber,
+    )
     results = []
     for t in trades:
         results.append(
@@ -155,6 +160,8 @@ def recent_trades(
     member: str | None = None,
     ticker: str | None = None,
     transaction_type: str | None = None,
+    party: str | None = None,
+    chamber: str | None = None,
     limit: int = 50,
     db: Session = Depends(get_db),
 ):
@@ -166,6 +173,10 @@ def recent_trades(
         query = query.filter(Trade.ticker == ticker.upper())
     if transaction_type:
         query = query.filter(Trade.transaction_type.ilike(f"%{transaction_type}%"))
+    if party:
+        query = query.filter(Member.party.ilike(f"%{party}%"))
+    if chamber:
+        query = query.filter(Member.chamber == chamber)
     trades = (
         query
         .order_by(Trade.transaction_date.desc().nullslast())
