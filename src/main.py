@@ -649,6 +649,16 @@ DASHBOARD_HTML = """
         <option value="House">House</option>
         <option value="Senate">Senate</option>
       </select>
+      <select class="filter-select" id="r-min-amount" onchange="filterRecent()">
+        <option value="">Any Size</option>
+        <option value="15001">$15K+</option>
+        <option value="50001">$50K+</option>
+        <option value="100001">$100K+</option>
+        <option value="250001">$250K+</option>
+        <option value="500001">$500K+</option>
+        <option value="1000001">$1M+</option>
+        <option value="5000001">$5M+</option>
+      </select>
       <button class="btn btn-primary" onclick="clearFilters()" style="font-size:11px;padding:10px 18px">Clear</button>
     </div>
     <div class="results-section" id="recent-results">
@@ -711,6 +721,16 @@ DASHBOARD_HTML = """
         <option value="">All Chambers</option>
         <option value="House">House</option>
         <option value="Senate">Senate</option>
+      </select>
+      <select class="filter-select" id="f-min-amount">
+        <option value="">Any Size</option>
+        <option value="15001">$15K+</option>
+        <option value="50001">$50K+</option>
+        <option value="100001">$100K+</option>
+        <option value="250001">$250K+</option>
+        <option value="500001">$500K+</option>
+        <option value="1000001">$1M+</option>
+        <option value="5000001">$5M+</option>
       </select>
       <button class="btn btn-primary" onclick="browseTrades()">Search</button>
     </div>
@@ -825,12 +845,14 @@ async function filterRecent() {
   const txType = document.getElementById('r-type').value;
   const party = document.getElementById('r-party').value;
   const chamber = document.getElementById('r-chamber').value;
+  const minAmt = document.getElementById('r-min-amount').value;
   const params = new URLSearchParams();
   if (member) params.set('member', member);
   if (ticker) params.set('ticker', ticker);
   if (txType) params.set('transaction_type', txType);
   if (party) params.set('party', party);
   if (chamber) params.set('chamber', chamber);
+  if (minAmt) params.set('min_amount', minAmt);
   params.set('limit', '50');
   const res = document.getElementById('recent-results');
   res.innerHTML = '<div class="loading"><span class="spinner"></span> Filtering...</div>';
@@ -853,6 +875,7 @@ function clearFilters() {
   document.getElementById('r-type').value = '';
   document.getElementById('r-party').value = '';
   document.getElementById('r-chamber').value = '';
+  document.getElementById('r-min-amount').value = '';
   loadRecent();
 }
 
@@ -914,6 +937,7 @@ async function browseTrades() {
   const ow = document.getElementById('f-owner').value;
   const pt = document.getElementById('f-party').value;
   const ch = document.getElementById('f-chamber').value;
+  const ma = document.getElementById('f-min-amount').value;
   if (m) params.set('member', m);
   if (t) params.set('ticker', t);
   if (s) params.set('sector', s);
@@ -921,6 +945,7 @@ async function browseTrades() {
   if (ow) params.set('owner', ow);
   if (pt) params.set('party', pt);
   if (ch) params.set('chamber', ch);
+  if (ma) params.set('min_amount', ma);
   params.set('limit', '50');
 
   const res = document.getElementById('browse-results');
@@ -1312,6 +1337,7 @@ async function downloadBrowseCSV() {
     const ow = document.getElementById('f-owner').value;
     const pt = document.getElementById('f-party').value;
     const ch = document.getElementById('f-chamber').value;
+    const ma = document.getElementById('f-min-amount').value;
     if (m) params.set('member', m);
     if (t) params.set('ticker', t);
     if (s) params.set('sector', s);
@@ -1319,6 +1345,7 @@ async function downloadBrowseCSV() {
     if (ow) params.set('owner', ow);
     if (pt) params.set('party', pt);
     if (ch) params.set('chamber', ch);
+    if (ma) params.set('min_amount', ma);
     params.set('limit', '10000');
     const resp = await fetch('/api/trades?' + params.toString());
     const trades = await resp.json();

@@ -214,6 +214,8 @@ def search_trades(
     owner: str | None = None,
     party: str | None = None,
     chamber: str | None = None,
+    min_amount: float | None = None,
+    max_amount: float | None = None,
 ) -> list[Trade]:
     """Search trades with optional filters."""
     query = db.query(Trade).join(Member)
@@ -224,6 +226,12 @@ def search_trades(
         query = query.filter(Member.party.ilike(f"%{party}%"))
     if chamber:
         query = query.filter(Member.chamber == chamber)
+    if min_amount is not None:
+        # Trade amount range overlaps [min_amount, +inf) when amount_high >= min_amount
+        query = query.filter(Trade.amount_high >= min_amount)
+    if max_amount is not None:
+        # Trade amount range overlaps (-inf, max_amount] when amount_low <= max_amount
+        query = query.filter(Trade.amount_low <= max_amount)
     if ticker:
         query = query.filter(Trade.ticker == ticker.upper())
     if sector:

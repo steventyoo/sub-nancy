@@ -119,6 +119,8 @@ def list_trades(
     owner: str | None = None,
     party: str | None = None,
     chamber: str | None = None,
+    min_amount: float | None = None,
+    max_amount: float | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     limit: int = 100,
@@ -131,6 +133,7 @@ def list_trades(
     trades = search_trades(
         db, member, ticker, sector, transaction_type, df, dt, limit, offset,
         owner=owner, party=party, chamber=chamber,
+        min_amount=min_amount, max_amount=max_amount,
     )
     results = []
     for t in trades:
@@ -162,6 +165,8 @@ def recent_trades(
     transaction_type: str | None = None,
     party: str | None = None,
     chamber: str | None = None,
+    min_amount: float | None = None,
+    max_amount: float | None = None,
     limit: int = 50,
     db: Session = Depends(get_db),
 ):
@@ -177,6 +182,10 @@ def recent_trades(
         query = query.filter(Member.party.ilike(f"%{party}%"))
     if chamber:
         query = query.filter(Member.chamber == chamber)
+    if min_amount is not None:
+        query = query.filter(Trade.amount_high >= min_amount)
+    if max_amount is not None:
+        query = query.filter(Trade.amount_low <= max_amount)
     trades = (
         query
         .order_by(Trade.transaction_date.desc().nullslast())
