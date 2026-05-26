@@ -463,30 +463,54 @@ async def scrape_capitol_trades(
 
 
 async def _get_top_politician_ids(client: httpx.AsyncClient) -> list[tuple[str, str]]:
-    """Get politician IDs from the Capitol Trades politicians page."""
-    politicians = []
-    try:
-        resp = await client.get("https://www.capitoltrades.com/politicians?pageSize=96")
-        resp.raise_for_status()
-        html = resp.text
+    """Get politician IDs from the Capitol Trades politicians page.
 
-        # Extract politician data from RSC — look for _odId (politician objects)
-        match = re.search(
-            r'self\.__next_f\.push\(\[1,"(.*?_odId.*?)"\]\)', html, re.DOTALL
-        )
-        if match:
+    Paginates through all politician listing pages so we cover every member,
+    not just the top 50 by recent activity. Without this, very active traders
+    who happen to fall outside the top 50 (e.g. Rob Bresnahan with 600+
+    trades but lower recent-7d activity) get only the handful of trades that
+    appear in the general /trades feed.
+    """
+    politicians = []
+    seen: set[str] = set()
+    max_pages = 12  # 12 pages * 96 = up to 1152 politicians (covers all of Congress)
+
+    for page in range(1, max_pages + 1):
+        try:
+            url = f"https://www.capitoltrades.com/politicians?page={page}&pageSize=96"
+            resp = await client.get(url)
+            resp.raise_for_status()
+            html = resp.text
+
+            match = re.search(
+                r'self\.__next_f\.push\(\[1,"(.*?_odId.*?)"\]\)', html, re.DOTALL
+            )
+            if not match:
+                logger.info(f"Politicians page {page}: no RSC data, stopping")
+                break
+
             chunk = match.group(1).replace('\\"', '"').replace('\\n', '\n')
-            # Find politician objects with bioguideId
             pols = re.findall(
                 r'"bioguideId":"([^"]+)".*?"firstName":"([^"]*)".*?"lastName":"([^"]*)"',
                 chunk,
             )
+            new_on_page = 0
             for bio_id, first, last in pols:
+                if bio_id in seen:
+                    continue
+                seen.add(bio_id)
                 politicians.append((bio_id, f"{first} {last}"))
-    except Exception as e:
-        logger.error(f"Failed to fetch politician list: {e}")
+                new_on_page += 1
 
-    return politicians[:50]  # Cap at 50 politicians
+            logger.info(f"Politicians page {page}: +{new_on_page} (total {len(politicians)})")
+            if new_on_page == 0:
+                break  # Hit the end of the listing
+            await asyncio.sleep(0.3)
+        except Exception as e:
+            logger.error(f"Failed to fetch politician list page {page}: {e}")
+            break
+
+    return politicians
 
 
 async def _scrape_politician_trades(
