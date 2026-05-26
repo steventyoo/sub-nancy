@@ -482,29 +482,59 @@ async def _get_top_politician_ids(client: httpx.AsyncClient) -> list[tuple[str, 
             resp.raise_for_status()
             html = resp.text
 
+            # Strategy 1: try the legacy JSON pattern (bioguideId + names in RSC keys)
+            new_on_page = 0
             match = re.search(
                 r'self\.__next_f\.push\(\[1,"(.*?_odId.*?)"\]\)', html, re.DOTALL
             )
-            if not match:
-                logger.info(f"Politicians page {page}: no RSC data, stopping")
-                break
+            if match:
+                chunk = match.group(1).replace('\\"', '"').replace('\\n', '\n')
+                pols = re.findall(
+                    r'"bioguideId":"([^"]+)".*?"firstName":"([^"]*)".*?"lastName":"([^"]*)"',
+                    chunk,
+                )
+                for bio_id, first, last in pols:
+                    if bio_id in seen:
+                        continue
+                    seen.add(bio_id)
+                    politicians.append((bio_id, f"{first} {last}"))
+                    new_on_page += 1
 
-            chunk = match.group(1).replace('\\"', '"').replace('\\n', '\n')
-            pols = re.findall(
-                r'"bioguideId":"([^"]+)".*?"firstName":"([^"]*)".*?"lastName":"([^"]*)"',
-                chunk,
-            )
-            new_on_page = 0
-            for bio_id, first, last in pols:
-                if bio_id in seen:
-                    continue
-                seen.add(bio_id)
-                politicians.append((bio_id, f"{first} {last}"))
-                new_on_page += 1
+            # Strategy 2: extract from /politicians/{bioguide_id} URL paths in HTML.
+            # Capitol Trades' page format renders these as links rather than as JSON
+            # keys, so the legacy regex above will not match on current builds.
+            if new_on_page == 0:
+                # Try to pair bioguide ID with name from the rendered HTML. The pattern
+                # in the RSC HTML chunks places the ID in a URL and the politician's
+                # name a short distance later in a children:"Name" structure.
+                pattern_paired = re.compile(
+                    r'/politicians/([A-Z]\d+)(?:[^"]*"[^"]*){0,5}?[^"]*"children":"([^"]+)"',
+                    re.DOTALL,
+                )
+                # Fallback: just extract bioguide IDs from URLs without names
+                pattern_ids_only = re.compile(r'/politicians/([A-Z]\d+)')
+
+                paired = pattern_paired.findall(html)
+                if paired:
+                    for bio_id, name in paired:
+                        if bio_id in seen:
+                            continue
+                        seen.add(bio_id)
+                        politicians.append((bio_id, name.strip()))
+                        new_on_page += 1
+
+                # Catch any IDs that the paired pattern missed (better to scrape with
+                # a placeholder name than skip the politician entirely).
+                for bio_id in pattern_ids_only.findall(html):
+                    if bio_id in seen:
+                        continue
+                    seen.add(bio_id)
+                    politicians.append((bio_id, f"unknown ({bio_id})"))
+                    new_on_page += 1
 
             logger.info(f"Politicians page {page}: +{new_on_page} (total {len(politicians)})")
             if new_on_page == 0:
-                break  # Hit the end of the listing
+                break  # Hit the end of the listing or parsing fully broke
             await asyncio.sleep(0.3)
         except Exception as e:
             logger.error(f"Failed to fetch politician list page {page}: {e}")
