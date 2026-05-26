@@ -500,36 +500,18 @@ async def _get_top_politician_ids(client: httpx.AsyncClient) -> list[tuple[str, 
                     politicians.append((bio_id, f"{first} {last}"))
                     new_on_page += 1
 
-            # Strategy 2: extract from /politicians/{bioguide_id} URL paths in HTML.
+            # Strategy 2: extract bioguide IDs from /politicians/{ID} URL paths.
             # Capitol Trades' page format renders these as links rather than as JSON
             # keys, so the legacy regex above will not match on current builds.
+            # We deliberately use a simple regex here (no backtracking) — names get
+            # backfilled by the trade scraper itself since each trade carries the
+            # politician's firstName/lastName.
             if new_on_page == 0:
-                # Try to pair bioguide ID with name from the rendered HTML. The pattern
-                # in the RSC HTML chunks places the ID in a URL and the politician's
-                # name a short distance later in a children:"Name" structure.
-                pattern_paired = re.compile(
-                    r'/politicians/([A-Z]\d+)(?:[^"]*"[^"]*){0,5}?[^"]*"children":"([^"]+)"',
-                    re.DOTALL,
-                )
-                # Fallback: just extract bioguide IDs from URLs without names
-                pattern_ids_only = re.compile(r'/politicians/([A-Z]\d+)')
-
-                paired = pattern_paired.findall(html)
-                if paired:
-                    for bio_id, name in paired:
-                        if bio_id in seen:
-                            continue
-                        seen.add(bio_id)
-                        politicians.append((bio_id, name.strip()))
-                        new_on_page += 1
-
-                # Catch any IDs that the paired pattern missed (better to scrape with
-                # a placeholder name than skip the politician entirely).
-                for bio_id in pattern_ids_only.findall(html):
+                for bio_id in re.findall(r'/politicians/([A-Z]\d+)', html):
                     if bio_id in seen:
                         continue
                     seen.add(bio_id)
-                    politicians.append((bio_id, f"unknown ({bio_id})"))
+                    politicians.append((bio_id, bio_id))
                     new_on_page += 1
 
             logger.info(f"Politicians page {page}: +{new_on_page} (total {len(politicians)})")
