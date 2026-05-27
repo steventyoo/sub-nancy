@@ -844,6 +844,32 @@ def trigger_scrape(background_tasks: BackgroundTasks):
     return {"message": "Daily scrape started in background. Check logs for progress."}
 
 
+@router.get("/scrape/debug-politicians")
+async def debug_politicians():
+    """Diagnostic: hit the Capitol Trades politicians page and report how many
+    bioguide IDs the scraper extracts. Used to confirm Phase 2 extraction is
+    working on the live deploy.
+    """
+    import httpx
+    from src.scrapers.capitol_trades import _get_top_politician_ids
+
+    async with httpx.AsyncClient(
+        timeout=60,
+        follow_redirects=True,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+    ) as client:
+        pols = await _get_top_politician_ids(client)
+        bres_present = any(p[0] == "B001327" for p in pols)
+        return {
+            "politicians_extracted": len(pols),
+            "bresnahan_in_list": bres_present,
+            "sample_first_5": [{"id": p[0], "name": p[1]} for p in pols[:5]],
+        }
+
+
 @router.post("/backfill")
 def trigger_backfill(background_tasks: BackgroundTasks):
     """Full historical backfill — Capitol Trades (400 pages) + all sources.
