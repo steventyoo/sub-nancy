@@ -853,10 +853,8 @@ async function filterRecent() {
   if (party) params.set('party', party);
   if (chamber) params.set('chamber', chamber);
   if (minAmt) params.set('min_amount', minAmt);
-  // When any filter is set, return every match (not just 50). When no filter,
-  // keep the 50-trade newest-first window so the page stays fast on first load.
-  const anyFilter = member || ticker || txType || party || chamber || minAmt;
-  params.set('limit', anyFilter ? '2000' : '50');
+  // No limit — return every match. The user explicitly does not want a cap.
+  params.set('limit', '100000');
   const res = document.getElementById('recent-results');
   res.innerHTML = '<div class="loading"><span class="spinner"></span> Filtering...</div>';
   try {
