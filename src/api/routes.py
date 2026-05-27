@@ -844,6 +844,77 @@ def trigger_scrape(background_tasks: BackgroundTasks):
     return {"message": "Daily scrape started in background. Check logs for progress."}
 
 
+@router.post("/admin/normalize-member-names")
+def normalize_member_names(db: Session = Depends(get_db)):
+    """Rewrite every member's stored name through normalize_member_name.
+
+    Turns "Bresnahan, Hon.. Rob" into "Rob Bresnahan", strips honorifics,
+    flips comma-format to First-Last, drops middle initials. After this
+    runs, the member dropdown is clean.
+
+    If normalization collides with an existing member, merges them (moves
+    trades and committee links to the existing keeper, deletes the dupe).
+    """
+    from src.db.models import Member, MemberCommittee
+    from src.services.trade_service import normalize_member_name
+
+    renamed = 0
+    merged = 0
+    trades_moved = 0
+    committees_moved = 0
+    actions = []
+
+    members = db.query(Member).all()
+    by_key: dict[tuple[str, str], Member] = {}
+
+    # Pre-populate the lookup with members that already have clean names
+    for m in members:
+        canon = normalize_member_name(m.name)
+        key = (canon, m.chamber)
+        if key not in by_key:
+            by_key[key] = m
+
+    for m in members:
+        canon = normalize_member_name(m.name)
+        if not canon:
+            continue
+        key = (canon, m.chamber)
+        keeper = by_key[key]
+
+        if keeper.id == m.id:
+            # This one is the keeper — just update its name if needed
+            if m.name != canon:
+                actions.append({"renamed": m.name, "to": canon})
+                m.name = canon
+                renamed += 1
+        else:
+            # Found a duplicate — merge into keeper
+            for field in ("party", "state", "district"):
+                if not getattr(keeper, field) and getattr(m, field):
+                    setattr(keeper, field, getattr(m, field))
+            n_trades = (
+                db.query(Trade).filter(Trade.member_id == m.id).update({"member_id": keeper.id})
+            )
+            n_comm = (
+                db.query(MemberCommittee).filter(MemberCommittee.member_id == m.id).update({"member_id": keeper.id})
+            )
+            trades_moved += n_trades
+            committees_moved += n_comm
+            actions.append({"merged": m.name, "into": keeper.name, "trades_moved": n_trades})
+            db.delete(m)
+            merged += 1
+
+    db.commit()
+    return {
+        "renamed": renamed,
+        "merged": merged,
+        "trades_reassigned": trades_moved,
+        "committee_links_reassigned": committees_moved,
+        "actions": actions[:50],
+        "total_actions": len(actions),
+    }
+
+
 @router.post("/admin/dedupe-members-by-lastname-state")
 def dedupe_members_by_lastname_state(db: Session = Depends(get_db)):
     """Second-pass dedupe: when 2+ members share the same last name, chamber,
