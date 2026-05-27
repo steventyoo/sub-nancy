@@ -844,6 +844,76 @@ def trigger_scrape(background_tasks: BackgroundTasks):
     return {"message": "Daily scrape started in background. Check logs for progress."}
 
 
+@router.post("/scrape/backfill-all-politicians")
+def trigger_backfill_all_politicians(background_tasks: BackgroundTasks):
+    """One-shot backfill: scrape every politician on Capitol Trades and ingest.
+
+    The regular /api/scrape path silently fails to deep-scrape on Railway
+    for unknown reasons. This endpoint uses the proven direct-call pattern
+    that worked for the Bresnahan debug endpoint — politician list, then
+    deep scrape each one, then ingest.
+    """
+    background_tasks.add_task(_run_backfill_all_politicians)
+    return {"message": "All-politician backfill started in background."}
+
+
+def _run_backfill_all_politicians():
+    """Direct backfill path that proved to work via the Bresnahan debug endpoint.
+    Scrapes every politician on Capitol Trades and ingests trades into the DB.
+    """
+    import asyncio
+    import logging
+    import httpx
+
+    from src.db.database import SessionLocal
+    from src.scrapers.capitol_trades import (
+        _get_top_politician_ids,
+        _scrape_politician_trades,
+    )
+    from src.services.trade_service import ingest_trades
+
+    logger = logging.getLogger(__name__)
+
+    async def run():
+        async with httpx.AsyncClient(
+            timeout=60,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            },
+        ) as client:
+            pols = await _get_top_politician_ids(client)
+            logger.info(f"Backfill: got {len(pols)} politicians")
+            total_new = 0
+            for i, (bio_id, name) in enumerate(pols):
+                try:
+                    trades = await _scrape_politician_trades(client, bio_id, 96)
+                    if trades:
+                        db = SessionLocal()
+                        try:
+                            new_count = ingest_trades(db, trades)
+                            total_new += new_count
+                            logger.info(
+                                f"[{i + 1}/{len(pols)}] {name} ({bio_id}): "
+                                f"scraped {len(trades)}, ingested {new_count} new "
+                                f"(running total: {total_new})"
+                            )
+                        finally:
+                            db.close()
+                    await asyncio.sleep(0.4)
+                except Exception as e:
+                    logger.error(f"Failed politician {bio_id}: {e}")
+            logger.info(f"Backfill complete: {total_new} new trades")
+
+    try:
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(run())
+        loop.close()
+    except Exception as e:
+        logger.error(f"Backfill outer failure: {e}", exc_info=True)
+
+
 @router.get("/scrape/debug-bresnahan")
 async def debug_bresnahan(db: Session = Depends(get_db)):
     """Diagnostic: scrape Bresnahan's trades directly and report what we get.
