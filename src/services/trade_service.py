@@ -88,6 +88,37 @@ def get_or_create_member(db: Session, name: str, chamber: str, **kwargs) -> Memb
                     c.name = canonical
                 break
 
+    # Third: match by (last_name, chamber, state) when state is known on both
+    # sides. Catches nickname variants the normalized-name pass can't:
+    # "Jerry Moran" + "Gerald Moran" (state=KS) → same Senator.
+    if not member and canonical:
+        incoming_state = kwargs.get("state")
+        incoming_last = canonical.split()[-1].lower() if canonical.split() else None
+        if incoming_last and incoming_state:
+            candidates = (
+                db.query(Member)
+                .filter(Member.chamber == chamber, Member.state == incoming_state)
+                .all()
+            )
+            for c in candidates:
+                c_last = c.name.split()[-1].lower() if c.name.split() else None
+                if c_last == incoming_last:
+                    member = c
+                    break
+        # If we have a last name but no state on incoming, try matching against
+        # an existing row that DOES have a state set with the same lastname.
+        elif incoming_last and not incoming_state:
+            candidates = (
+                db.query(Member)
+                .filter(Member.chamber == chamber, Member.state.isnot(None))
+                .all()
+            )
+            for c in candidates:
+                c_last = c.name.split()[-1].lower() if c.name.split() else None
+                if c_last == incoming_last:
+                    member = c
+                    break
+
     if not member:
         member = Member(name=canonical, chamber=chamber, **kwargs)
         db.add(member)
