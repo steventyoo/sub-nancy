@@ -844,6 +844,53 @@ def trigger_scrape(background_tasks: BackgroundTasks):
     return {"message": "Daily scrape started in background. Check logs for progress."}
 
 
+@router.get("/scrape/debug-bresnahan")
+async def debug_bresnahan(db: Session = Depends(get_db)):
+    """Diagnostic: scrape Bresnahan's trades directly and report what we get.
+    Helps distinguish "scrape fails on Railway" from "ingestion fails on Railway".
+    """
+    import httpx
+    from src.scrapers.capitol_trades import _scrape_politician_trades
+    from src.services.trade_service import ingest_trades
+
+    async with httpx.AsyncClient(
+        timeout=60,
+        follow_redirects=True,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+    ) as client:
+        trades = await _scrape_politician_trades(client, "B001327", 96)
+        scraped = len(trades)
+        # Try ingesting them
+        new = ingest_trades(db, trades) if trades else 0
+        # Count Bresnahan trades in DB now
+        from src.db.models import Member, Trade
+        bres_count = (
+            db.query(Trade)
+            .join(Member)
+            .filter(Member.name.ilike("%bresnahan%"))
+            .count()
+        )
+        sample = trades[:3] if trades else []
+        return {
+            "scraped": scraped,
+            "new_ingested": new,
+            "bresnahan_in_db": bres_count,
+            "sample": [
+                {
+                    "member_name": t.get("member_name"),
+                    "ticker": t.get("ticker"),
+                    "tx_date": t["transaction_date"].isoformat() if t.get("transaction_date") else None,
+                    "tx_type": t.get("transaction_type"),
+                    "amount_low": t.get("amount_low"),
+                }
+                for t in sample
+            ],
+        }
+
+
 @router.get("/scrape/debug-politicians")
 async def debug_politicians():
     """Diagnostic: hit the Capitol Trades politicians page and report how many
