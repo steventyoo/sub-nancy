@@ -844,6 +844,93 @@ def trigger_scrape(background_tasks: BackgroundTasks):
     return {"message": "Daily scrape started in background. Check logs for progress."}
 
 
+@router.post("/admin/dedupe-members")
+def dedupe_members(db: Session = Depends(get_db)):
+    """Merge duplicate Member rows that refer to the same person under different
+    name spellings. Reassigns all trades and committee links to the canonical
+    member row, then deletes the duplicates.
+
+    Picks the canonical row by preferring:
+      1. Whichever has a non-null `party` set
+      2. Whichever has the most trades attached
+      3. Whichever name normalizes "cleanest" (no commas, no Hon..)
+    """
+    from collections import defaultdict
+    from src.db.models import Member, MemberCommittee
+    from src.services.trade_service import normalize_member_name
+
+    # Group members by (canonical_name, chamber)
+    groups: dict[tuple[str, str], list[Member]] = defaultdict(list)
+    for m in db.query(Member).all():
+        key = (normalize_member_name(m.name), m.chamber)
+        groups[key].append(m)
+
+    merged = 0
+    trades_moved = 0
+    committees_moved = 0
+    deleted = 0
+    actions = []
+
+    for (canonical_name, chamber), members in groups.items():
+        if len(members) <= 1:
+            continue
+
+        # Pick canonical row: party set + most trades wins
+        def score(m: Member) -> tuple:
+            trade_count = db.query(Trade).filter(Trade.member_id == m.id).count()
+            has_party = 1 if m.party else 0
+            # Prefer name without "Hon" or commas (rough cleanliness signal)
+            clean = 0 if ("," in m.name or "Hon" in m.name) else 1
+            return (has_party, trade_count, clean)
+
+        members.sort(key=score, reverse=True)
+        keeper = members[0]
+        dups = members[1:]
+
+        # Normalize keeper's stored name
+        if keeper.name != canonical_name:
+            keeper.name = canonical_name
+        # Backfill missing fields from dupes
+        for d in dups:
+            for field in ("party", "state", "district"):
+                if not getattr(keeper, field) and getattr(d, field):
+                    setattr(keeper, field, getattr(d, field))
+
+        # Move all trades and committee links from dupes to keeper
+        for d in dups:
+            n_trades = (
+                db.query(Trade).filter(Trade.member_id == d.id).update({"member_id": keeper.id})
+            )
+            n_comm = (
+                db.query(MemberCommittee)
+                .filter(MemberCommittee.member_id == d.id)
+                .update({"member_id": keeper.id})
+            )
+            trades_moved += n_trades
+            committees_moved += n_comm
+            db.delete(d)
+            deleted += 1
+
+        actions.append({
+            "canonical": canonical_name,
+            "chamber": chamber,
+            "keeper_id": keeper.id,
+            "merged_count": len(dups),
+            "merged_names": [d.name for d in dups],
+        })
+        merged += 1
+
+    db.commit()
+    return {
+        "groups_merged": merged,
+        "duplicate_rows_deleted": deleted,
+        "trades_reassigned": trades_moved,
+        "committee_links_reassigned": committees_moved,
+        "actions": actions[:30],  # truncate to avoid huge response
+        "total_actions": len(actions),
+    }
+
+
 @router.post("/scrape/backfill-all-politicians")
 def trigger_backfill_all_politicians(background_tasks: BackgroundTasks):
     """One-shot backfill: scrape every politician on Capitol Trades and ingest.

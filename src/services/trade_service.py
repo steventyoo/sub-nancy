@@ -11,20 +11,94 @@ from src.db.models import Member, Sector, Trade
 logger = logging.getLogger(__name__)
 
 
+_TITLE_TOKENS = {"hon", "hon.", "hon..", "rep", "rep.", "sen", "sen.", "dr", "dr.",
+                 "mr", "mr.", "mrs", "mrs.", "ms", "ms."}
+_SUFFIX_TOKENS = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}
+
+
+def normalize_member_name(raw: str) -> str:
+    """Normalize a politician name into a canonical "First Last" form.
+
+    Sources publish names in wildly different formats:
+      - Capitol Trades: "Robert Bresnahan"
+      - House Clerk:    "Bresnahan, Hon.. Rob"
+      - Senate Disc:    "Bresnahan, Robert"
+      - Variants:       "Michael F Bennet" vs "Michael Bennet"
+
+    Returns a stable key suitable for matching across sources. Strategy:
+      1. If name contains a comma, flip "Last, First" → "First Last"
+      2. Strip honorifics (Hon., Rep., Sen., Dr., Mr., Mrs.)
+      3. Strip trailing suffixes (Jr., II, III)
+      4. Collapse multiple spaces
+      5. Title-case for canonical display
+    """
+    if not raw:
+        return raw
+    s = raw.strip()
+
+    # Flip "Last, First..." to "First... Last"
+    if "," in s:
+        parts = [p.strip() for p in s.split(",", 1)]
+        if len(parts) == 2:
+            s = f"{parts[1]} {parts[0]}"
+
+    # Tokenize, strip honorifics + suffixes, drop empty tokens
+    tokens = []
+    for tok in s.split():
+        low = tok.lower().rstrip(".,")
+        if low in _TITLE_TOKENS or low + "." in _TITLE_TOKENS:
+            continue
+        if low in _SUFFIX_TOKENS:
+            continue
+        # Drop standalone middle initials like "F" or "F." for the matching key —
+        # they were the cause of "Michael Bennet" vs "Michael F Bennet" splits.
+        if len(low) <= 2 and low.endswith("."):
+            continue
+        if len(low) == 1 and tok.isalpha():
+            continue
+        tokens.append(tok)
+
+    cleaned = " ".join(tokens)
+    # Title-case (handles "Mcconnell" → "Mcconnell" etc. — good enough)
+    return cleaned.title()
+
+
 def get_or_create_member(db: Session, name: str, chamber: str, **kwargs) -> Member:
+    """Find an existing member by normalized name OR create a new one.
+
+    Matches across sources that publish names in different formats by
+    normalizing both sides before comparing. Falls back to exact-match for
+    safety (e.g. two real different people named the same).
+    """
+    canonical = normalize_member_name(name) if name else name
+
+    # First try exact match (cheap)
     member = db.query(Member).filter(
-        Member.name == name, Member.chamber == chamber
+        Member.name == canonical, Member.chamber == chamber
     ).first()
+
+    # Then try matching any existing member whose normalized name == canonical
     if not member:
-        member = Member(name=name, chamber=chamber, **kwargs)
+        candidates = db.query(Member).filter(Member.chamber == chamber).all()
+        for c in candidates:
+            if normalize_member_name(c.name) == canonical:
+                member = c
+                # Upgrade the stored name to the cleaner canonical form
+                if c.name != canonical:
+                    c.name = canonical
+                break
+
+    if not member:
+        member = Member(name=canonical, chamber=chamber, **kwargs)
         db.add(member)
         db.flush()
-        # Commit immediately so the member survives any later rollbacks
         db.commit()
     else:
-        # Update party if we have it now and didn't before
-        if kwargs.get("party") and not member.party:
-            member.party = kwargs["party"]
+        # Update party/state/district if we have them now and didn't before
+        for key in ("party", "state", "district"):
+            val = kwargs.get(key)
+            if val and not getattr(member, key, None):
+                setattr(member, key, val)
     return member
 
 
