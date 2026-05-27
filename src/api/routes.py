@@ -844,6 +844,134 @@ def trigger_scrape(background_tasks: BackgroundTasks):
     return {"message": "Daily scrape started in background. Check logs for progress."}
 
 
+@router.post("/admin/dedupe-members-by-lastname-state")
+def dedupe_members_by_lastname_state(db: Session = Depends(get_db)):
+    """Second-pass dedupe: when 2+ members share the same last name, chamber,
+    AND state, they're the same person regardless of first-name spelling.
+
+    Catches the cases the first dedupe couldn't:
+      - Rob Bresnahan vs Robert Bresnahan (nickname)
+      - Jack Reed vs John F Reed
+      - Rick Scott vs Richard Scott
+      - Tammy Duckworth vs Ladda Tammy Duckworth
+    """
+    from collections import defaultdict
+    from src.db.models import Member, MemberCommittee
+    from src.services.trade_service import normalize_member_name
+
+    def last_name_key(name: str) -> str:
+        """Extract a comparable last-name token from a (possibly messy) name."""
+        # First normalize (flips commas, drops honorifics)
+        n = normalize_member_name(name)
+        tokens = [t for t in n.split() if t.lower() not in {"jr.", "jr", "sr.", "sr", "ii", "iii", "iv"}]
+        return tokens[-1].lower() if tokens else ""
+
+    # Group by (last_name, chamber, state). If state is missing on a row, we
+    # can still match it provided exactly one OTHER row in the same
+    # (last_name, chamber) bucket has a state set — we'll merge into that one.
+    groups: dict[tuple[str, str, str | None], list[Member]] = defaultdict(list)
+    for m in db.query(Member).all():
+        key = (last_name_key(m.name), m.chamber, m.state)
+        groups[key].append(m)
+
+    # Also build a parallel index by (lastname, chamber) ignoring state to
+    # handle rows that have null state.
+    by_last_chamber: dict[tuple[str, str], list[Member]] = defaultdict(list)
+    for m in db.query(Member).all():
+        by_last_chamber[(last_name_key(m.name), m.chamber)].append(m)
+
+    merged = 0
+    trades_moved = 0
+    committees_moved = 0
+    deleted = 0
+    actions = []
+
+    # First pass: merge rows that match on (last, chamber, state) — high confidence
+    handled_ids: set[int] = set()
+    for (last, chamber, state), members in list(groups.items()):
+        if len(members) <= 1 or not last:
+            continue
+        members.sort(key=lambda m: (1 if m.party else 0,
+                                    db.query(Trade).filter(Trade.member_id == m.id).count(),
+                                    0 if ("," in m.name or "Hon" in m.name) else 1),
+                     reverse=True)
+        keeper = members[0]
+        dups = members[1:]
+        for d in dups:
+            handled_ids.add(d.id)
+            for field in ("party", "state", "district"):
+                if not getattr(keeper, field) and getattr(d, field):
+                    setattr(keeper, field, getattr(d, field))
+            n_trades = (
+                db.query(Trade).filter(Trade.member_id == d.id).update({"member_id": keeper.id})
+            )
+            n_comm = (
+                db.query(MemberCommittee).filter(MemberCommittee.member_id == d.id).update({"member_id": keeper.id})
+            )
+            trades_moved += n_trades
+            committees_moved += n_comm
+            actions.append({
+                "keeper": keeper.name,
+                "merged": d.name,
+                "state": state,
+                "trades_moved": n_trades,
+            })
+            db.delete(d)
+            deleted += 1
+        # Canonicalize keeper's name
+        keeper.name = normalize_member_name(keeper.name)
+        merged += 1
+
+    # Second pass: merge by (last, chamber) when one row has null state.
+    # This catches "Robert Bresnahan" (state=PA) + "Bresnahan, Hon.. Rob" (state=PA)
+    # which we already handled above, but ALSO handles cases where one row
+    # genuinely has no state (state=None) but lastname+chamber matches another.
+    for (last, chamber), members in by_last_chamber.items():
+        members = [m for m in members if m.id not in handled_ids]
+        if len(members) <= 1 or not last:
+            continue
+        # Only merge if exactly one row has state set — otherwise too risky
+        with_state = [m for m in members if m.state]
+        without_state = [m for m in members if not m.state]
+        if len(with_state) == 1 and without_state:
+            keeper = with_state[0]
+            for d in without_state:
+                if d.id in handled_ids:
+                    continue
+                handled_ids.add(d.id)
+                for field in ("party", "district"):
+                    if not getattr(keeper, field) and getattr(d, field):
+                        setattr(keeper, field, getattr(d, field))
+                n_trades = (
+                    db.query(Trade).filter(Trade.member_id == d.id).update({"member_id": keeper.id})
+                )
+                n_comm = (
+                    db.query(MemberCommittee).filter(MemberCommittee.member_id == d.id).update({"member_id": keeper.id})
+                )
+                trades_moved += n_trades
+                committees_moved += n_comm
+                actions.append({
+                    "keeper": keeper.name,
+                    "merged": d.name,
+                    "state": "(via lastname-only match)",
+                    "trades_moved": n_trades,
+                })
+                db.delete(d)
+                deleted += 1
+            keeper.name = normalize_member_name(keeper.name)
+            merged += 1
+
+    db.commit()
+    return {
+        "groups_merged": merged,
+        "duplicate_rows_deleted": deleted,
+        "trades_reassigned": trades_moved,
+        "committee_links_reassigned": committees_moved,
+        "actions": actions[:40],
+        "total_actions": len(actions),
+    }
+
+
 @router.post("/admin/dedupe-members")
 def dedupe_members(db: Session = Depends(get_db)):
     """Merge duplicate Member rows that refer to the same person under different
