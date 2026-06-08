@@ -1031,7 +1031,9 @@ def dedupe_members_by_lastname_state(db: Session = Depends(get_db)):
         return tokens[0].lower() if tokens else ""
 
     def first_compatible(a: str, b: str) -> bool:
-        """Treat Tim/Timothy, Josh/Joshua, etc. as the same first name."""
+        """Treat Tim/Timothy, Susie/Suzanne, etc. as the same first name when
+        the outer match has already constrained on (last_name, chamber, state).
+        """
         a, b = a.lower(), b.lower()
         if not a or not b:
             return True
@@ -1040,6 +1042,9 @@ def dedupe_members_by_lastname_state(db: Session = Depends(get_db)):
         if a.startswith(b) or b.startswith(a):
             return True
         if len(a) >= 3 and len(b) >= 3 and a[:3] == b[:3]:
+            return True
+        # Same first letter is enough given the outer (last_name, chamber, state) match
+        if a[0] == b[0]:
             return True
         return False
 

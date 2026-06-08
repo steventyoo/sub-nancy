@@ -100,8 +100,13 @@ def get_or_create_member(db: Session, name: str, chamber: str, **kwargs) -> Memb
 
         def _first_compatible(c_name: str) -> bool:
             """True if the candidate's first name is plausibly the same person.
-            Either name is a prefix of the other (Tim → Timothy), they share
-            the same first 3 letters (Susan → Susanne), or they're equal.
+            Catches: prefix match (Tim/Timothy), 3-char prefix (Sam/Samuel),
+            and same first letter (Susie/Suzanne, Bobby/Robert).
+
+            We're aggressive here because the outer match already constrained
+            on (last_name, chamber, state). Two reps in the same state with
+            the same last name AND first names starting with the same letter
+            is effectively impossible in current Congress.
             """
             c_tokens = c_name.split()
             if not c_tokens or not incoming_first:
@@ -112,6 +117,9 @@ def get_or_create_member(db: Session, name: str, chamber: str, **kwargs) -> Memb
             if c_first.startswith(incoming_first) or incoming_first.startswith(c_first):
                 return True
             if len(c_first) >= 3 and len(incoming_first) >= 3 and c_first[:3] == incoming_first[:3]:
+                return True
+            # Same first letter is enough when last name + state + chamber match
+            if c_first[0] == incoming_first[0]:
                 return True
             return False
 
