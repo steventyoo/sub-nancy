@@ -1019,6 +1019,24 @@ def dedupe_members_by_lastname_state(db: Session = Depends(get_db)):
         tokens = [t for t in n.split() if t.lower() not in {"jr.", "jr", "sr.", "sr", "ii", "iii", "iv"}]
         return tokens[-1].lower() if tokens else ""
 
+    def first_name_key(name: str) -> str:
+        n = normalize_member_name(name)
+        tokens = n.split()
+        return tokens[0].lower() if tokens else ""
+
+    def first_compatible(a: str, b: str) -> bool:
+        """Treat Tim/Timothy, Josh/Joshua, etc. as the same first name."""
+        a, b = a.lower(), b.lower()
+        if not a or not b:
+            return True
+        if a == b:
+            return True
+        if a.startswith(b) or b.startswith(a):
+            return True
+        if len(a) >= 3 and len(b) >= 3 and a[:3] == b[:3]:
+            return True
+        return False
+
     # Group by (last_name, chamber, state). If state is missing on a row, we
     # can still match it provided exactly one OTHER row in the same
     # (last_name, chamber) bucket has a state set — we'll merge into that one.
@@ -1039,17 +1057,39 @@ def dedupe_members_by_lastname_state(db: Session = Depends(get_db)):
     deleted = 0
     actions = []
 
-    # First pass: merge rows that match on (last, chamber, state) — high confidence
+    # First pass: merge rows that match on (last, chamber, state) — high confidence.
+    # Within a (last, chamber, state) group, also collapse first-name variants
+    # like Tim/Timothy and Josh/Joshua via first_compatible.
     handled_ids: set[int] = set()
+    expanded_groups: list[list[Member]] = []
     for (last, chamber, state), members in list(groups.items()):
         if len(members) <= 1 or not last:
             continue
+        # Bucket members by mutually-compatible first names
+        buckets: list[list[Member]] = []
+        for m in members:
+            placed = False
+            for b in buckets:
+                if first_compatible(first_name_key(b[0].name), first_name_key(m.name)):
+                    b.append(m)
+                    placed = True
+                    break
+            if not placed:
+                buckets.append([m])
+        for b in buckets:
+            if len(b) > 1:
+                expanded_groups.append(b)
+
+    for members in expanded_groups:
         members.sort(key=lambda m: (1 if m.party else 0,
                                     db.query(Trade).filter(Trade.member_id == m.id).count(),
-                                    0 if ("," in m.name or "Hon" in m.name) else 1),
+                                    0 if ("," in m.name or "Hon" in m.name) else 1,
+                                    # Prefer the longer (more formal) first name as canonical
+                                    len(m.name)),
                      reverse=True)
         keeper = members[0]
         dups = members[1:]
+        state = keeper.state
         for d in dups:
             handled_ids.add(d.id)
             for field in ("party", "state", "district"):
@@ -1076,20 +1116,21 @@ def dedupe_members_by_lastname_state(db: Session = Depends(get_db)):
         merged += 1
 
     # Second pass: merge by (last, chamber) when one row has null state.
-    # This catches "Robert Bresnahan" (state=PA) + "Bresnahan, Hon.. Rob" (state=PA)
-    # which we already handled above, but ALSO handles cases where one row
-    # genuinely has no state (state=None) but lastname+chamber matches another.
+    # Now also gated by first-name compatibility so Tim/Timothy and Josh/Joshua
+    # collapse even when one row's state is null.
     for (last, chamber), members in by_last_chamber.items():
         members = [m for m in members if m.id not in handled_ids]
         if len(members) <= 1 or not last:
             continue
-        # Only merge if exactly one row has state set — otherwise too risky
         with_state = [m for m in members if m.state]
         without_state = [m for m in members if not m.state]
         if len(with_state) == 1 and without_state:
             keeper = with_state[0]
+            kf = first_name_key(keeper.name)
             for d in without_state:
                 if d.id in handled_ids:
+                    continue
+                if not first_compatible(kf, first_name_key(d.name)):
                     continue
                 handled_ids.add(d.id)
                 for field in ("party", "district"):

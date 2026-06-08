@@ -88,12 +88,33 @@ def get_or_create_member(db: Session, name: str, chamber: str, **kwargs) -> Memb
                     c.name = canonical
                 break
 
-    # Third: match by (last_name, chamber, state) when state is known on both
-    # sides. Catches nickname variants the normalized-name pass can't:
-    # "Jerry Moran" + "Gerald Moran" (state=KS) → same Senator.
+    # Third: match by (last_name, chamber, state). High confidence — when
+    # state and last name match in the same chamber, it's the same person
+    # regardless of first-name spelling (Jerry/Gerald, Tim/Timothy, Josh/Joshua,
+    # Rick/Richard, Mitch/Addison, etc.).
     if not member and canonical:
         incoming_state = kwargs.get("state")
-        incoming_last = canonical.split()[-1].lower() if canonical.split() else None
+        incoming_tokens = canonical.split()
+        incoming_last = incoming_tokens[-1].lower() if incoming_tokens else None
+        incoming_first = incoming_tokens[0].lower() if incoming_tokens else None
+
+        def _first_compatible(c_name: str) -> bool:
+            """True if the candidate's first name is plausibly the same person.
+            Either name is a prefix of the other (Tim → Timothy), they share
+            the same first 3 letters (Susan → Susanne), or they're equal.
+            """
+            c_tokens = c_name.split()
+            if not c_tokens or not incoming_first:
+                return True
+            c_first = c_tokens[0].lower()
+            if c_first == incoming_first:
+                return True
+            if c_first.startswith(incoming_first) or incoming_first.startswith(c_first):
+                return True
+            if len(c_first) >= 3 and len(incoming_first) >= 3 and c_first[:3] == incoming_first[:3]:
+                return True
+            return False
+
         if incoming_last and incoming_state:
             candidates = (
                 db.query(Member)
@@ -102,11 +123,12 @@ def get_or_create_member(db: Session, name: str, chamber: str, **kwargs) -> Memb
             )
             for c in candidates:
                 c_last = c.name.split()[-1].lower() if c.name.split() else None
-                if c_last == incoming_last:
+                if c_last == incoming_last and _first_compatible(c.name):
                     member = c
                     break
-        # If we have a last name but no state on incoming, try matching against
-        # an existing row that DOES have a state set with the same lastname.
+        # Fallback: incoming has no state. Match against existing rows that
+        # DO have state set, but only if first names are compatible too —
+        # otherwise we'd collapse unrelated people sharing a last name.
         elif incoming_last and not incoming_state:
             candidates = (
                 db.query(Member)
@@ -115,7 +137,7 @@ def get_or_create_member(db: Session, name: str, chamber: str, **kwargs) -> Memb
             )
             for c in candidates:
                 c_last = c.name.split()[-1].lower() if c.name.split() else None
-                if c_last == incoming_last:
+                if c_last == incoming_last and _first_compatible(c.name):
                     member = c
                     break
 
