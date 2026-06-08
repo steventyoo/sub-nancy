@@ -1145,6 +1145,187 @@ def _run_backfill_discrepancies():
         logger.error(f"Backfill outer failure: {e}", exc_info=True)
 
 
+@router.post("/admin/slack-daily-summary")
+async def slack_daily_summary(db: Session = Depends(get_db)):
+    """Run a fresh audit + health check and POST a formatted summary to Slack.
+
+    Webhook URL is read from env var SLACK_WEBHOOK_URL (set in Railway).
+    Returns the message body so we can inspect what was sent without checking Slack.
+
+    Wire this into the end of the daily routines — one call replaces the
+    audit + cross-source + health + format chain in the remote-trigger prompt.
+    """
+    import os
+    import httpx
+    from datetime import datetime as _dt
+
+    webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
+    if not webhook_url:
+        return {
+            "error": "SLACK_WEBHOOK_URL not set in Railway environment",
+            "fix": "Add it under Railway → service → Variables, then redeploy."
+        }
+
+    # 1. Member audit (read-only)
+    audit = await _inline_member_audit(db)
+    # 2. Cross-source audit
+    cross = await cross_source_audit(min_gap=5, db=db)
+    # 3. Health
+    from src.db.models import Trade, Member
+    total_trades = db.query(Trade).count()
+    total_members = db.query(Member).count()
+    latest_filing = (
+        db.query(Trade).order_by(Trade.filing_date.desc().nullslast()).first()
+    )
+    latest_tx = (
+        db.query(Trade).order_by(Trade.transaction_date.desc().nullslast()).first()
+    )
+    lf = latest_filing.filing_date.strftime("%Y-%m-%d") if latest_filing and latest_filing.filing_date else "?"
+    ltx = latest_tx.transaction_date.strftime("%Y-%m-%d") if latest_tx and latest_tx.transaction_date else "?"
+
+    today_str = _dt.utcnow().strftime("%Y-%m-%d")
+    name_clean = audit.get("is_clean", False)
+    uw_gaps = cross.get("gaps_found", 0)
+    missing = cross.get("total_missing_trades", 0)
+
+    # Build status emoji and label
+    if not name_clean and uw_gaps >= 10:
+        status = ":rotating_light: ALERT"
+    elif uw_gaps >= 5 or not name_clean:
+        status = ":warning: Warning"
+    else:
+        status = ":white_check_mark: All Clean"
+
+    # Build the Slack message — Block Kit for readability
+    header_line = (
+        f"*{status} — Sub-Nancy Daily Audit · {today_str}*"
+    )
+    summary_fields = [
+        {"type": "mrkdwn", "text": f"*Total Trades:*\n{total_trades:,}"},
+        {"type": "mrkdwn", "text": f"*Members Tracked:*\n{total_members:,}"},
+        {"type": "mrkdwn", "text": f"*Latest Filing:*\n{lf}"},
+        {"type": "mrkdwn", "text": f"*Latest Transaction:*\n{ltx}"},
+        {"type": "mrkdwn", "text": f"*UW Coverage Gaps:*\n{uw_gaps} politicians"},
+        {"type": "mrkdwn", "text": f"*Missing Trades:*\n{missing:,}"},
+    ]
+
+    blocks = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": header_line}},
+        {"type": "section", "fields": summary_fields},
+    ]
+
+    # Top 5 gaps if any
+    gaps_list = cross.get("gaps", [])[:5]
+    if gaps_list:
+        gap_lines = []
+        for g in gaps_list:
+            gap_lines.append(
+                f"• *{g['uw_name']}* ({g.get('chamber','?')} {g.get('state') or ''}) — "
+                f"UW: {g['uw_count']} / Ours: {g['our_count']} → missing {g['gap']}"
+            )
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*Top Coverage Gaps:*\n" + "\n".join(gap_lines)}
+        })
+
+    # Name dirtiness details
+    if not name_clean:
+        bad = []
+        for k in ("exact_duplicates", "normalized_duplicates", "lastname_state_duplicates", "mixed_state_duplicates"):
+            v = audit.get(k) or {}
+            if v:
+                bad.append(f"• `{k}`: {list(v.keys())[:3]}")
+        if bad:
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*Name Cleanup Needed:*\n" + "\n".join(bad)}
+            })
+
+    # Link to dashboard
+    blocks.append({
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": "<https://sub-nancy-production.up.railway.app/|Open Sub-Nancy Dashboard> · <https://sub-nancy-production.up.railway.app/#tidal|Tidal Coverage Tab>"}]
+    })
+
+    payload = {
+        "text": f"{status} Sub-Nancy Audit {today_str}: {total_trades:,} trades, {uw_gaps} gaps",
+        "blocks": blocks,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(webhook_url, json=payload)
+            r.raise_for_status()
+    except httpx.HTTPError as e:
+        return {"error": f"Slack POST failed: {e}", "payload": payload}
+
+    return {
+        "sent": True,
+        "status_label": status,
+        "total_trades": total_trades,
+        "uw_gaps": uw_gaps,
+        "missing_trades": missing,
+        "name_clean": name_clean,
+        "payload": payload,
+    }
+
+
+async def _inline_member_audit(db: Session) -> dict:
+    """Inline copy of the member audit logic so we can call it from the
+    Slack endpoint without a recursive HTTP call.
+    """
+    from collections import defaultdict
+    from src.db.models import Member
+    from src.services.trade_service import normalize_member_name
+
+    def last_token(name: str) -> str:
+        toks = [t for t in name.replace(",", "").split()
+                if t.lower() not in {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}]
+        return toks[-1].lower() if toks else ""
+
+    members = db.query(Member).all()
+    dirty = [m.name for m in members if "Hon" in m.name or "," in m.name]
+    by_exact = defaultdict(list)
+    for m in members:
+        by_exact[(m.name, m.chamber)].append(m.name)
+    exact_dupes = {f"{k[0]} ({k[1]})": v for k, v in by_exact.items() if len(v) > 1}
+
+    by_normalized = defaultdict(list)
+    for m in members:
+        by_normalized[(normalize_member_name(m.name), m.chamber)].append(m.name)
+    normalized_dupes = {f"{k[0]} ({k[1]})": v for k, v in by_normalized.items() if len(v) > 1}
+
+    by_lcs = defaultdict(list)
+    for m in members:
+        by_lcs[(last_token(m.name), m.chamber, m.state)].append(m.name)
+    lastname_state_dupes = {
+        f"{k[0]} ({k[1]}, {k[2]})": v for k, v in by_lcs.items()
+        if len(v) > 1 and k[0]
+    }
+
+    by_lc = defaultdict(list)
+    for m in members:
+        by_lc[(last_token(m.name), m.chamber)].append(m)
+    mixed_state = {}
+    for k, rows in by_lc.items():
+        if len(rows) > 1 and k[0]:
+            has_null = any(not r.state for r in rows)
+            has_set = any(r.state for r in rows)
+            if has_null and has_set:
+                mixed_state[f"{k[0]} ({k[1]})"] = [f"{r.name} [state={r.state}]" for r in rows]
+
+    return {
+        "is_clean": not dirty and not exact_dupes and not normalized_dupes
+                    and not lastname_state_dupes and not mixed_state,
+        "total_members": len(members),
+        "dirty_names": dirty,
+        "exact_duplicates": exact_dupes,
+        "normalized_duplicates": normalized_dupes,
+        "lastname_state_duplicates": lastname_state_dupes,
+        "mixed_state_duplicates": mixed_state,
+    }
+
+
 @router.get("/admin/audit-members")
 def audit_members(db: Session = Depends(get_db)):
     """Read-only audit of the member table. Reports anything that looks like
