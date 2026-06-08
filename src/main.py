@@ -542,6 +542,7 @@ DASHBOARD_HTML = """
   <div class="nav-tab" onclick="showTab('query')">Query</div>
   <div class="nav-tab" onclick="showTab('browse')">Browse</div>
   <div class="nav-tab" onclick="showTab('subscribe')">Alerts</div>
+  <div class="nav-tab" onclick="showTab('tidal')">Tidal</div>
 </div>
 
 <div class="container">
@@ -753,6 +754,27 @@ DASHBOARD_HTML = """
     </div>
   </div>
 
+  <!-- TIDAL TAB -->
+  <div id="tab-tidal" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div class="section-title">Tidal Coverage Audit</div>
+      <div>
+        <button class="btn btn-primary" onclick="runTidalAudit()" style="font-size:11px;padding:10px 18px">Re-run Audit</button>
+        <button class="btn btn-primary" onclick="runTidalBackfill()" style="font-size:11px;padding:10px 18px;margin-left:8px">Backfill Gaps</button>
+      </div>
+    </div>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 24px">Cross-references our DB against Unusual Whales. Any politician where UW shows more trades than we have is flagged. Click Backfill to deep-scrape the gaps from Capitol Trades.</p>
+    <div id="tidal-summary" class="stats-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px">
+      <div class="stat-card"><div class="stat-value" id="td-checked">-</div><div class="stat-label">UW Politicians Checked</div></div>
+      <div class="stat-card"><div class="stat-value" id="td-gaps" style="color:var(--red)">-</div><div class="stat-label">Coverage Gaps</div></div>
+      <div class="stat-card"><div class="stat-value" id="td-missing">-</div><div class="stat-label">Missing Trades</div></div>
+      <div class="stat-card"><div class="stat-value" id="td-our">-</div><div class="stat-label">Our Members</div></div>
+    </div>
+    <div class="results-section" id="tidal-results">
+      <div class="empty">Click Re-run Audit to scan now</div>
+    </div>
+  </div>
+
 </div>
 
 <div class="footer">
@@ -768,7 +790,7 @@ DASHBOARD_HTML = """
 </div>
 
 <script>
-const TABS = ['dashboard','recent','leaderboard','screener','query','browse','subscribe'];
+const TABS = ['dashboard','recent','leaderboard','screener','query','browse','subscribe','tidal'];
 let _previousTab = 'dashboard';
 function showTab(name) {
   _previousTab = name;
@@ -784,6 +806,55 @@ function showTab(name) {
   if (name === 'recent' && !window._recentLoaded) { loadDropdowns(); loadRecent(); window._recentLoaded = true; }
   if (name === 'leaderboard' && !window._lbLoaded) { loadLeaderboard(); window._lbLoaded = true; }
   if (name === 'screener' && !window._scLoaded) { loadScreener(); window._scLoaded = true; }
+  if (name === 'tidal' && !window._tidalLoaded) { runTidalAudit(); window._tidalLoaded = true; }
+}
+
+async function runTidalAudit() {
+  const res = document.getElementById('tidal-results');
+  res.innerHTML = '<div class="loading"><span class="spinner"></span> Cross-referencing against Unusual Whales (~30s)...</div>';
+  try {
+    const resp = await fetch('/api/admin/cross-source-audit?min_gap=5');
+    const data = await resp.json();
+    if (data.error) {
+      res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Audit failed: ' + escapeHtml(data.error) + '</div>';
+      return;
+    }
+    document.getElementById('td-checked').textContent = (data.checked_uw_politicians || 0).toLocaleString();
+    document.getElementById('td-gaps').textContent = (data.gaps_found || 0).toLocaleString();
+    document.getElementById('td-missing').textContent = (data.total_missing_trades || 0).toLocaleString();
+    document.getElementById('td-our').textContent = (data.our_members || 0).toLocaleString();
+    if (!data.gaps || data.gaps.length === 0) {
+      res.innerHTML = '<div class="answer" style="border-left-color:var(--green);background:#f0fff4">✓ No gaps detected. Our DB matches Unusual Whales coverage for all checked politicians.</div>';
+      return;
+    }
+    let h = '<table><thead><tr><th>POLITICIAN</th><th>CHAMBER</th><th>STATE</th><th>UW HAS</th><th>WE HAVE</th><th>GAP</th><th></th></tr></thead><tbody>';
+    for (const g of data.gaps) {
+      const link = g.our_name ? '<a href="#" onclick="showProfile(\\'' + escapeHtml(g.our_name) + '\\');return false">' + escapeHtml(g.our_name) + '</a>' : '<span style="color:var(--gray)">NOT IN DB</span>';
+      h += '<tr>';
+      h += '<td><strong>' + escapeHtml(g.uw_name) + '</strong><br><span style="font-size:10px;color:var(--gray)">our: ' + link + '</span></td>';
+      h += '<td>' + escapeHtml(g.chamber || '') + '</td>';
+      h += '<td>' + escapeHtml(g.state || '') + '</td>';
+      h += '<td style="text-align:right">' + g.uw_count.toLocaleString() + '</td>';
+      h += '<td style="text-align:right">' + g.our_count.toLocaleString() + '</td>';
+      h += '<td style="text-align:right;color:var(--red);font-weight:600">-' + g.gap.toLocaleString() + '</td>';
+      h += '<td style="text-align:right;font-size:10px;color:var(--gray)">' + escapeHtml(g.district || '') + '</td>';
+      h += '</tr>';
+    }
+    h += '</tbody></table>';
+    res.innerHTML = '<div style="margin-bottom:12px"><span class="count-badge">' + data.gaps.length + ' Gaps</span> <span style="color:var(--gray);font-size:11px;margin-left:12px">' + data.total_missing_trades.toLocaleString() + ' missing trades total</span></div>' + h;
+  } catch(e) {
+    res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Audit error: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+async function runTidalBackfill() {
+  const res = document.getElementById('tidal-results');
+  res.innerHTML = '<div class="loading"><span class="spinner"></span> Backfill kicked off in background. This runs Capitol Trades deep-scrape for every gap (5-15 min). Re-run Audit in ~10 minutes to verify.</div>';
+  try {
+    await fetch('/api/admin/backfill-discrepancies', {method:'POST'});
+  } catch(e) {
+    res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Backfill error: ' + escapeHtml(e.message) + '</div>';
+  }
 }
 
 function showProfile(memberName) {
