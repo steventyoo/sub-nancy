@@ -852,6 +852,80 @@ def trigger_scrape(background_tasks: BackgroundTasks):
     return {"message": "Daily scrape started in background. Check logs for progress."}
 
 
+@router.get("/admin/audit-members")
+def audit_members(db: Session = Depends(get_db)):
+    """Read-only audit of the member table. Reports anything that looks like
+    a duplicate or a dirty name. Returns 0 across the board when clean.
+    """
+    from collections import defaultdict
+    from src.db.models import Member
+    from src.services.trade_service import normalize_member_name
+
+    def last_token(name: str) -> str:
+        toks = [t for t in name.replace(",", "").split()
+                if t.lower() not in {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}]
+        return toks[-1].lower() if toks else ""
+
+    members = db.query(Member).all()
+    total = len(members)
+
+    # 1. Dirty stored names — should be 0
+    dirty = [m.name for m in members if "Hon" in m.name or "," in m.name]
+
+    # 2. Exact (name, chamber) duplicate rows
+    by_exact: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for m in members:
+        by_exact[(m.name, m.chamber)].append(m.name)
+    exact_dupes = {f"{k[0]} ({k[1]})": v for k, v in by_exact.items() if len(v) > 1}
+
+    # 3. Same normalized-name + chamber
+    by_normalized: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for m in members:
+        by_normalized[(normalize_member_name(m.name), m.chamber)].append(m.name)
+    normalized_dupes = {
+        f"{k[0]} ({k[1]})": v for k, v in by_normalized.items() if len(v) > 1
+    }
+
+    # 4. Same (last_name, chamber, state) — high-confidence duplicate signal
+    by_lcs: dict[tuple[str, str, str | None], list[str]] = defaultdict(list)
+    for m in members:
+        by_lcs[(last_token(m.name), m.chamber, m.state)].append(m.name)
+    lastname_state_dupes = {
+        f"{k[0]} ({k[1]}, {k[2]})": v
+        for k, v in by_lcs.items()
+        if len(v) > 1 and k[0]
+    }
+
+    # 5. (last_name, chamber) where one row has state and another doesn't
+    by_lc: dict[tuple[str, str], list[Member]] = defaultdict(list)
+    for m in members:
+        by_lc[(last_token(m.name), m.chamber)].append(m)
+    mixed_state = {}
+    for k, rows in by_lc.items():
+        if len(rows) > 1 and k[0]:
+            has_null = any(not r.state for r in rows)
+            has_set = any(r.state for r in rows)
+            if has_null and has_set:
+                mixed_state[f"{k[0]} ({k[1]})"] = [
+                    f"{r.name} [state={r.state}]" for r in rows
+                ]
+
+    is_clean = (
+        not dirty and not exact_dupes and not normalized_dupes
+        and not lastname_state_dupes and not mixed_state
+    )
+
+    return {
+        "is_clean": is_clean,
+        "total_members": total,
+        "dirty_names": dirty,
+        "exact_duplicates": exact_dupes,
+        "normalized_duplicates": normalized_dupes,
+        "lastname_state_duplicates": lastname_state_dupes,
+        "mixed_state_duplicates": mixed_state,
+    }
+
+
 @router.post("/admin/normalize-member-names")
 def normalize_member_names(db: Session = Depends(get_db)):
     """Rewrite every member's stored name through normalize_member_name.
