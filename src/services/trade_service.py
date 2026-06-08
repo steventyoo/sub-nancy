@@ -348,7 +348,13 @@ def search_trades(
     query = db.query(Trade).join(Member)
 
     if member_name:
-        query = query.filter(Member.name.ilike(f"%{member_name}%"))
+        # Split on whitespace and require every token to be a substring of the
+        # member name. So "Tim Walberg" matches "Timothy Walberg" because "Tim"
+        # is a substring of "Timothy" and "Walberg" matches. Single-token
+        # queries still work like a plain ilike.
+        tokens = [t for t in member_name.strip().split() if t]
+        for tok in tokens:
+            query = query.filter(Member.name.ilike(f"%{tok}%"))
     if party:
         query = query.filter(Member.party.ilike(f"%{party}%"))
     if chamber:

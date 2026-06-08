@@ -173,7 +173,13 @@ def recent_trades(
     """Get the most recent trades by transaction date with optional filters."""
     query = db.query(Trade).join(Member)
     if member:
-        query = query.filter(Member.name == member)
+        # Token-AND substring match so "Tim Walberg" finds "Timothy Walberg"
+        tokens = [t for t in member.strip().split() if t]
+        if len(tokens) == 1:
+            query = query.filter(Member.name.ilike(f"%{tokens[0]}%"))
+        else:
+            for tok in tokens:
+                query = query.filter(Member.name.ilike(f"%{tok}%"))
     if ticker:
         query = query.filter(Trade.ticker == ticker.upper())
     if transaction_type:
