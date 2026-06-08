@@ -795,6 +795,7 @@ def _run_scrape(mode: str = "daily"):
     from src.scrapers.finnhub import scrape_finnhub_congress
     from src.scrapers.house import scrape_house_disclosures
     from src.scrapers.senate import scrape_senate_disclosures
+    from src.scrapers.senate_efd import scrape_senate_efd_direct
     from src.scrapers.unusual_whales import scrape_unusual_whales
     from src.services.trade_service import ingest_trades
 
@@ -815,6 +816,11 @@ def _run_scrape(mode: str = "daily"):
         senate_trades = loop.run_until_complete(scrape_senate_disclosures())
         logger.info(f"Senate GitHub: {len(senate_trades)} trades scraped")
 
+        # Senate eFD: direct from efdsearch.senate.gov (authoritative, freshest)
+        efd_days = 180 if mode == "backfill" else 30
+        senate_efd_trades = loop.run_until_complete(scrape_senate_efd_direct(days_back=efd_days))
+        logger.info(f"Senate eFD direct: {len(senate_efd_trades)} trades scraped")
+
         # House: official clerk site (limited — no PDF parsing)
         house_trades = loop.run_until_complete(scrape_house_disclosures())
         logger.info(f"House Clerk: {len(house_trades)} trades scraped")
@@ -831,7 +837,10 @@ def _run_scrape(mode: str = "daily"):
 
         loop.close()
 
-        all_trades = capitol_trades + senate_trades + house_trades + finnhub_trades + uw_trades
+        all_trades = (
+            capitol_trades + senate_trades + senate_efd_trades
+            + house_trades + finnhub_trades + uw_trades
+        )
         new_count = ingest_trades(db, all_trades)
 
         # Update health tracking
@@ -842,8 +851,8 @@ def _run_scrape(mode: str = "daily"):
         logger.info(
             f"Background scrape complete ({mode}): {new_count} new trades "
             f"(capitol={len(capitol_trades)}, senate={len(senate_trades)}, "
-            f"house={len(house_trades)}, finnhub={len(finnhub_trades)}, "
-            f"uw={len(uw_trades)})"
+            f"senate_efd={len(senate_efd_trades)}, house={len(house_trades)}, "
+            f"finnhub={len(finnhub_trades)}, uw={len(uw_trades)})"
         )
     except Exception as e:
         logger.error(f"Background scrape failed: {e}", exc_info=True)
