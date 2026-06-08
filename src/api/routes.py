@@ -789,6 +789,7 @@ def _run_scrape(mode: str = "daily"):
     from src.scrapers.finnhub import scrape_finnhub_congress
     from src.scrapers.house import scrape_house_disclosures
     from src.scrapers.senate import scrape_senate_disclosures
+    from src.scrapers.unusual_whales import scrape_unusual_whales
     from src.services.trade_service import ingest_trades
 
     logger = logging.getLogger(__name__)
@@ -816,9 +817,15 @@ def _run_scrape(mode: str = "daily"):
         finnhub_trades = loop.run_until_complete(scrape_finnhub_congress())
         logger.info(f"Finnhub: {len(finnhub_trades)} trades scraped")
 
+        # Unusual Whales: public politics page (no auth), often catches filings
+        # that Capitol Trades misses
+        uw_pages = 50 if mode == "backfill" else 15
+        uw_trades = loop.run_until_complete(scrape_unusual_whales(max_pages=uw_pages))
+        logger.info(f"Unusual Whales: {len(uw_trades)} trades scraped")
+
         loop.close()
 
-        all_trades = capitol_trades + senate_trades + house_trades + finnhub_trades
+        all_trades = capitol_trades + senate_trades + house_trades + finnhub_trades + uw_trades
         new_count = ingest_trades(db, all_trades)
 
         # Update health tracking
@@ -829,7 +836,8 @@ def _run_scrape(mode: str = "daily"):
         logger.info(
             f"Background scrape complete ({mode}): {new_count} new trades "
             f"(capitol={len(capitol_trades)}, senate={len(senate_trades)}, "
-            f"house={len(house_trades)}, finnhub={len(finnhub_trades)})"
+            f"house={len(house_trades)}, finnhub={len(finnhub_trades)}, "
+            f"uw={len(uw_trades)})"
         )
     except Exception as e:
         logger.error(f"Background scrape failed: {e}", exc_info=True)
@@ -1128,6 +1136,35 @@ def dedupe_members(db: Session = Depends(get_db)):
         "actions": actions[:30],  # truncate to avoid huge response
         "total_actions": len(actions),
     }
+
+
+@router.post("/scrape/unusual-whales")
+def trigger_unusual_whales_scrape(background_tasks: BackgroundTasks):
+    """Pull recent trades from the Unusual Whales public politics page."""
+    background_tasks.add_task(_run_uw_scrape)
+    return {"message": "Unusual Whales scrape started in background."}
+
+
+def _run_uw_scrape():
+    import asyncio
+    import logging
+
+    from src.db.database import SessionLocal
+    from src.scrapers.unusual_whales import scrape_unusual_whales
+    from src.services.trade_service import ingest_trades
+
+    logger = logging.getLogger(__name__)
+    db = SessionLocal()
+    try:
+        loop = asyncio.new_event_loop()
+        trades = loop.run_until_complete(scrape_unusual_whales(max_pages=50))
+        loop.close()
+        new_count = ingest_trades(db, trades)
+        logger.info(f"Unusual Whales scrape: {len(trades)} scraped, {new_count} new")
+    except Exception as e:
+        logger.error(f"Unusual Whales scrape failed: {e}", exc_info=True)
+    finally:
+        db.close()
 
 
 @router.post("/scrape/backfill-all-politicians")
