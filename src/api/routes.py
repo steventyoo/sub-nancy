@@ -858,6 +858,284 @@ def trigger_scrape(background_tasks: BackgroundTasks):
     return {"message": "Daily scrape started in background. Check logs for progress."}
 
 
+@router.get("/admin/cross-source-audit")
+async def cross_source_audit(min_gap: int = 5, db: Session = Depends(get_db)):
+    """Compare our per-politician trade counts to Unusual Whales' counts.
+
+    Returns the list of politicians where UW shows materially more trades than
+    we have on file. Run daily — anything that shows up is a coverage gap.
+
+    Args:
+      min_gap: only flag politicians where (uw_count - our_count) >= this.
+    """
+    import httpx
+    import re
+    import json as _json
+    from src.db.models import Member
+    from src.services.trade_service import normalize_member_name
+
+    # Fetch UW politician_data from the /politics page (no auth required)
+    async with httpx.AsyncClient(
+        timeout=45,
+        follow_redirects=True,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+    ) as client:
+        resp = await client.get("https://unusualwhales.com/politics")
+        m = re.search(
+            r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
+            resp.text,
+            re.DOTALL,
+        )
+        if not m:
+            return {"error": "Could not fetch UW politician_data"}
+        data = _json.loads(m.group(1))
+        uw_politicians = (
+            data.get("props", {}).get("pageProps", {}).get("politician_data", [])
+        )
+
+    # Build OUR per-member counts
+    our_counts: dict[int, int] = {}
+    members = db.query(Member).all()
+    for m in members:
+        our_counts[m.id] = (
+            db.query(Trade).filter(Trade.member_id == m.id).count()
+        )
+
+    def _last_name(s: str) -> str:
+        toks = [
+            t for t in s.replace(",", "").split()
+            if t.lower() not in {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}
+        ]
+        return toks[-1].lower() if toks else ""
+
+    def _first_letter(s: str) -> str:
+        toks = s.split()
+        return toks[0][0].lower() if toks and toks[0] else ""
+
+    # Match each UW politician to our member by (last_name, chamber, state, first letter)
+    gaps = []
+    for uw in uw_politicians:
+        uw_name = uw.get("full_name") or ""
+        uw_count = uw.get("total_trades") or 0
+        uw_chamber = (uw.get("current_chamber") or "").lower()
+        uw_district = uw.get("current_district") or ""
+        uw_state = uw_district.split("-")[0].upper() if uw_district else None
+
+        if not uw_name or not uw_chamber:
+            continue
+        uw_chamber_norm = "House" if uw_chamber == "house" else "Senate"
+
+        # Find matching member by (last, chamber, state) + first letter
+        uw_last = _last_name(uw_name)
+        uw_first_letter = _first_letter(uw_name)
+
+        match = None
+        for our_m in members:
+            if our_m.chamber != uw_chamber_norm:
+                continue
+            if _last_name(our_m.name) != uw_last:
+                continue
+            # If both have state, require match
+            if uw_state and our_m.state and our_m.state != uw_state:
+                continue
+            # First letter must match (avoids Greg Stanton vs Greg Steube collisions)
+            if _first_letter(our_m.name) != uw_first_letter:
+                continue
+            match = our_m
+            break
+
+        our_count = our_counts.get(match.id, 0) if match else 0
+        gap = uw_count - our_count
+
+        if gap >= min_gap:
+            gaps.append({
+                "uw_name": uw_name,
+                "our_name": match.name if match else None,
+                "chamber": uw_chamber_norm,
+                "state": uw_state,
+                "district": uw_district,
+                "uw_count": uw_count,
+                "our_count": our_count,
+                "gap": gap,
+                "uw_politician_id": uw.get("id"),
+                "name_slug": uw.get("name_slug"),
+            })
+
+    gaps.sort(key=lambda x: x["gap"], reverse=True)
+    return {
+        "checked_uw_politicians": len(uw_politicians),
+        "our_members": len(members),
+        "gaps_found": len(gaps),
+        "total_missing_trades": sum(g["gap"] for g in gaps),
+        "min_gap_threshold": min_gap,
+        "gaps": gaps[:100],  # cap response size; full list in DB anyway
+    }
+
+
+@router.post("/admin/backfill-discrepancies")
+def backfill_discrepancies(background_tasks: BackgroundTasks):
+    """For each politician with a coverage gap vs UW, deep-scrape them.
+    Runs the audit, then for each gap, scrapes their UW pages and ingests.
+    """
+    background_tasks.add_task(_run_backfill_discrepancies)
+    return {"message": "Discrepancy backfill started."}
+
+
+def _run_backfill_discrepancies():
+    """Audit ours vs UW, then deep-scrape any politician with a gap via
+    Capitol Trades' per-politician URL (the only source where bioguide-id
+    filtering actually works to return per-member full history).
+    """
+    import asyncio
+    import logging
+    import re
+    import json as _json
+    import httpx
+
+    from src.db.database import SessionLocal
+    from src.db.models import Member
+    from src.scrapers.capitol_trades import _scrape_politician_trades
+    from src.services.trade_service import ingest_trades, normalize_member_name
+
+    logger = logging.getLogger(__name__)
+
+    async def run():
+        async with httpx.AsyncClient(
+            timeout=45,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            },
+        ) as client:
+            # 1. Get UW politician_data with total_trades counts
+            resp = await client.get("https://unusualwhales.com/politics")
+            m = re.search(
+                r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
+                resp.text,
+                re.DOTALL,
+            )
+            data = _json.loads(m.group(1))
+            uw_politicians = (
+                data.get("props", {}).get("pageProps", {}).get("politician_data", [])
+            )
+
+            # 2. Load our member counts
+            db = SessionLocal()
+            try:
+                our_members = db.query(Member).all()
+                from src.db.models import Trade
+                our_counts = {
+                    m.id: db.query(Trade).filter(Trade.member_id == m.id).count()
+                    for m in our_members
+                }
+            finally:
+                db.close()
+
+            def _last(s: str) -> str:
+                toks = [t for t in s.replace(",", "").split()
+                        if t.lower() not in {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}]
+                return toks[-1].lower() if toks else ""
+            def _fl(s: str) -> str:
+                toks = s.split()
+                return toks[0][0].lower() if toks and toks[0] else ""
+
+            # 3. For each UW politician with gap > 5, try to find their
+            #    bioguide_id by scraping Capitol Trades' politicians page once.
+            #    The Capitol Trades politicians page lists bioguide IDs we
+            #    can then use for per-politician deep scrape.
+            from src.scrapers.capitol_trades import _get_top_politician_ids
+            ct_pols = await _get_top_politician_ids(client)
+            # Index by last name for quick lookup
+            ct_by_lastname: dict[str, list[tuple[str, str]]] = {}
+            for bio_id, name in ct_pols:
+                ct_by_lastname.setdefault(_last(name), []).append((bio_id, name))
+
+            backfilled = 0
+            total_new = 0
+            for uw in uw_politicians:
+                uw_total = uw.get("total_trades") or 0
+                uw_name = uw.get("full_name") or ""
+                uw_chamber = (uw.get("current_chamber") or "").lower()
+                uw_district = uw.get("current_district") or ""
+                uw_state = uw_district.split("-")[0].upper() if uw_district else None
+                if not uw_name or uw_total < 1:
+                    continue
+
+                uw_last = _last(uw_name)
+                uw_fl = _fl(uw_name)
+                chamber_norm = "House" if uw_chamber == "house" else "Senate"
+
+                # Find matching member
+                match_id = None
+                for our_m in our_members:
+                    if our_m.chamber != chamber_norm:
+                        continue
+                    if _last(our_m.name) != uw_last:
+                        continue
+                    if uw_state and our_m.state and our_m.state != uw_state:
+                        continue
+                    if _fl(our_m.name) != uw_fl:
+                        continue
+                    match_id = our_m.id
+                    break
+                our_n = our_counts.get(match_id, 0) if match_id else 0
+                gap = uw_total - our_n
+                if gap < 5:
+                    continue
+
+                # Find this politician's Capitol Trades bioguide id
+                ct_candidates = ct_by_lastname.get(uw_last, [])
+                bio_id = None
+                for bid, cname in ct_candidates:
+                    if _fl(cname) == uw_fl:
+                        bio_id = bid
+                        break
+                if not bio_id:
+                    logger.info(f"No CT bioguide for {uw_name} (gap={gap})")
+                    continue
+
+                # Deep-scrape via Capitol Trades
+                try:
+                    trades = await _scrape_politician_trades(client, bio_id, 96)
+                    if trades:
+                        db = SessionLocal()
+                        try:
+                            new = ingest_trades(db, trades)
+                            total_new += new
+                            backfilled += 1
+                            logger.info(
+                                f"Backfill {uw_name} (gap was {gap}): scraped {len(trades)}, "
+                                f"+{new} new (running total +{total_new})"
+                            )
+                        finally:
+                            db.close()
+                    await asyncio.sleep(0.4)
+                except Exception as e:
+                    logger.error(f"Backfill {uw_name} failed: {e}")
+
+            logger.info(
+                f"Discrepancy backfill complete: backfilled {backfilled} politicians, +{total_new} trades"
+            )
+
+    try:
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(run())
+        loop.close()
+    except Exception as e:
+        logger.error(f"Backfill outer failure: {e}", exc_info=True)
+
+    try:
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(run())
+        loop.close()
+    except Exception as e:
+        logger.error(f"Backfill outer failure: {e}", exc_info=True)
+
+
 @router.get("/admin/audit-members")
 def audit_members(db: Session = Depends(get_db)):
     """Read-only audit of the member table. Reports anything that looks like
