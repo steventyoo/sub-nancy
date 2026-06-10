@@ -829,11 +829,19 @@ def _run_scrape(mode: str = "daily"):
         finnhub_trades = loop.run_until_complete(scrape_finnhub_congress())
         logger.info(f"Finnhub: {len(finnhub_trades)} trades scraped")
 
-        # Unusual Whales: public politics page (no auth), often catches filings
-        # that Capitol Trades misses
-        uw_pages = 50 if mode == "backfill" else 15
-        uw_trades = loop.run_until_complete(scrape_unusual_whales(max_pages=uw_pages))
-        logger.info(f"Unusual Whales: {len(uw_trades)} trades scraped")
+        # Unusual Whales: prefer the authenticated API when UW_API_TOKEN is set
+        # (no pagination cap, more reliable). Fall back to the public-page
+        # scraper when no token is configured.
+        import os as _os
+        if _os.environ.get("UW_API_TOKEN", "").strip():
+            from src.scrapers.uw_api import scrape_uw_api
+            uw_max = 40 if mode == "backfill" else 20
+            uw_trades = loop.run_until_complete(scrape_uw_api(max_pages=uw_max))
+            logger.info(f"Unusual Whales API: {len(uw_trades)} trades scraped")
+        else:
+            uw_pages = 50 if mode == "backfill" else 15
+            uw_trades = loop.run_until_complete(scrape_unusual_whales(max_pages=uw_pages))
+            logger.info(f"Unusual Whales (page scrape): {len(uw_trades)} trades scraped")
 
         loop.close()
 
@@ -877,33 +885,51 @@ async def cross_source_audit(min_gap: int = 5, db: Session = Depends(get_db)):
     Args:
       min_gap: only flag politicians where (uw_count - our_count) >= this.
     """
+    import os
     import httpx
     import re
     import json as _json
     from src.db.models import Member
     from src.services.trade_service import normalize_member_name
 
-    # Fetch UW politician_data from the /politics page (no auth required)
-    async with httpx.AsyncClient(
-        timeout=45,
-        follow_redirects=True,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        },
-    ) as client:
-        resp = await client.get("https://unusualwhales.com/politics")
-        m = re.search(
-            r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
-            resp.text,
-            re.DOTALL,
-        )
-        if not m:
-            return {"error": "Could not fetch UW politician_data"}
-        data = _json.loads(m.group(1))
-        uw_politicians = (
-            data.get("props", {}).get("pageProps", {}).get("politician_data", [])
-        )
+    uw_politicians = []
+    # Prefer the authenticated API roster (ground truth) when a token exists.
+    if os.environ.get("UW_API_TOKEN", "").strip():
+        from src.scrapers.uw_api import fetch_politicians
+        api_pols = await fetch_politicians()
+        # Normalize API shape to match the page-scrape shape used below
+        for p in api_pols:
+            uw_politicians.append({
+                "full_name": p.get("name") or p.get("full_name"),
+                "total_trades": p.get("trade_count") or p.get("total_trades") or 0,
+                "current_chamber": p.get("chamber") or p.get("current_chamber"),
+                "current_district": p.get("district") or p.get("current_district") or "",
+                "id": p.get("politician_id") or p.get("id"),
+                "name_slug": p.get("name_slug"),
+            })
+
+    # Fall back to the public /politics page if API unavailable / empty
+    if not uw_politicians:
+        async with httpx.AsyncClient(
+            timeout=45,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            },
+        ) as client:
+            resp = await client.get("https://unusualwhales.com/politics")
+            m = re.search(
+                r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
+                resp.text,
+                re.DOTALL,
+            )
+            if not m:
+                return {"error": "Could not fetch UW politician_data"}
+            data = _json.loads(m.group(1))
+            uw_politicians = (
+                data.get("props", {}).get("pageProps", {}).get("politician_data", [])
+            )
 
     # Build OUR per-member counts
     our_counts: dict[int, int] = {}
@@ -1143,6 +1169,34 @@ def _run_backfill_discrepancies():
         loop.close()
     except Exception as e:
         logger.error(f"Backfill outer failure: {e}", exc_info=True)
+
+
+@router.get("/anomaly-feed")
+async def anomaly_feed(types: str | None = None, limit: int = 200):
+    """Congressional trades flagged as unusual by Unusual Whales, with reason tags.
+
+    Tags: committee_conflict, first_person_to_trade, low_marketcap,
+    unusual_industry, unusually_large_trade, fec_donation_conflict.
+    Requires UW_API_TOKEN. This is the alpha-signal feed (API-only — not
+    available from scraping).
+    """
+    import os
+    if not os.environ.get("UW_API_TOKEN", "").strip():
+        return {"error": "UW_API_TOKEN not set", "trades": []}
+    from src.scrapers.uw_api import fetch_unusual_trades
+    rows = await fetch_unusual_trades(types=types, limit=min(limit, 500), max_pages=3)
+    return {"count": len(rows), "types_filter": types, "trades": rows[:limit]}
+
+
+@router.get("/late-filers")
+async def late_filers(limit: int = 200):
+    """Politicians late on their STOCK Act PTR filings (UW API). Insider-signal."""
+    import os
+    if not os.environ.get("UW_API_TOKEN", "").strip():
+        return {"error": "UW_API_TOKEN not set", "late": []}
+    from src.scrapers.uw_api import fetch_late_reports
+    rows = await fetch_late_reports(limit=limit)
+    return {"count": len(rows), "late": rows}
 
 
 @router.post("/admin/slack-daily-summary")
