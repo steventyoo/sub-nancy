@@ -1122,13 +1122,37 @@ def _run_backfill_discrepancies():
                 if gap < 5:
                     continue
 
-                # Find this politician's Capitol Trades bioguide id
+                # Find this politician's Capitol Trades bioguide id.
+                # Step 1: check the (shallow) CT roster we already loaded.
                 ct_candidates = ct_by_lastname.get(uw_last, [])
                 bio_id = None
                 for bid, cname in ct_candidates:
                     if _fl(cname) == uw_fl:
                         bio_id = bid
                         break
+                # Step 2: if not in the roster (most heavy traders aren't),
+                # search Capitol Trades by last name to resolve the bioguide.
+                if not bio_id:
+                    try:
+                        import re as _re
+                        sr = await client.get(
+                            f"https://www.capitoltrades.com/politicians?search={uw_last}"
+                        )
+                        found = list(dict.fromkeys(_re.findall(r'/politicians/([A-Z]\d+)', sr.text)))
+                        if len(found) == 1:
+                            bio_id = found[0]
+                        elif len(found) > 1:
+                            # Multiple same-lastname — match by first initial in the
+                            # rendered names near each id is unreliable; take the first
+                            # whose page name shares the first letter.
+                            for cand in found:
+                                if uw_fl and uw_fl in sr.text.lower():
+                                    bio_id = cand
+                                    break
+                            bio_id = bio_id or found[0]
+                        await asyncio.sleep(0.3)
+                    except Exception as e:
+                        logger.debug(f"CT search failed for {uw_name}: {e}")
                 if not bio_id:
                     logger.info(f"No CT bioguide for {uw_name} (gap={gap})")
                     continue
