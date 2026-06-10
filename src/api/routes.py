@@ -1325,7 +1325,7 @@ async def slack_daily_summary(db: Session = Depends(get_db)):
         }
 
     # 1. Member audit (read-only)
-    audit = await _inline_member_audit(db)
+    audit = _member_audit(db)
     # 2. Cross-source audit
     cross = await cross_source_audit(min_gap=5, db=db)
     # 3. Health
@@ -1389,10 +1389,12 @@ async def slack_daily_summary(db: Session = Depends(get_db)):
     # Name dirtiness details
     if not name_clean:
         bad = []
-        for k in ("exact_duplicates", "normalized_duplicates", "lastname_state_duplicates", "mixed_state_duplicates"):
-            v = audit.get(k) or {}
-            if v:
-                bad.append(f"• `{k}`: {list(v.keys())[:3]}")
+        if audit.get("dirty_names"):
+            bad.append(f"• {len(audit['dirty_names'])} dirty names (e.g. {audit['dirty_names'][:2]})")
+        dgroups = audit.get("duplicate_groups") or {}
+        if dgroups:
+            sample = list(dgroups.values())[:3]
+            bad.append(f"• {len(dgroups)} duplicate groups (e.g. {sample})")
         if bad:
             blocks.append({
                 "type": "section",
@@ -1428,134 +1430,110 @@ async def slack_daily_summary(db: Session = Depends(get_db)):
     }
 
 
-async def _inline_member_audit(db: Session) -> dict:
-    """Inline copy of the member audit logic so we can call it from the
-    Slack endpoint without a recursive HTTP call.
+def _member_audit(db: Session) -> dict:
+    """Member audit using same_person() detection — shared by the audit
+    endpoint and the Slack summary.
     """
-    from collections import defaultdict
     from src.db.models import Member
-    from src.services.trade_service import normalize_member_name
-
-    def last_token(name: str) -> str:
-        toks = [t for t in name.replace(",", "").split()
-                if t.lower() not in {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}]
-        return toks[-1].lower() if toks else ""
+    from src.services.trade_service import same_person
 
     members = db.query(Member).all()
+
+    # Dirty = still carries honorific/comma format and needs normalizing
     dirty = [m.name for m in members if "Hon" in m.name or "," in m.name]
-    by_exact = defaultdict(list)
-    for m in members:
-        by_exact[(m.name, m.chamber)].append(m.name)
-    exact_dupes = {f"{k[0]} ({k[1]})": v for k, v in by_exact.items() if len(v) > 1}
 
-    by_normalized = defaultdict(list)
-    for m in members:
-        by_normalized[(normalize_member_name(m.name), m.chamber)].append(m.name)
-    normalized_dupes = {f"{k[0]} ({k[1]})": v for k, v in by_normalized.items() if len(v) > 1}
-
-    by_lcs = defaultdict(list)
-    for m in members:
-        by_lcs[(last_token(m.name), m.chamber, m.state)].append(m.name)
-    lastname_state_dupes = {
-        f"{k[0]} ({k[1]}, {k[2]})": v for k, v in by_lcs.items()
-        if len(v) > 1 and k[0]
-    }
-
-    by_lc = defaultdict(list)
-    for m in members:
-        by_lc[(last_token(m.name), m.chamber)].append(m)
-    mixed_state = {}
-    for k, rows in by_lc.items():
-        if len(rows) > 1 and k[0]:
-            has_null = any(not r.state for r in rows)
-            has_set = any(r.state for r in rows)
-            if has_null and has_set:
-                mixed_state[f"{k[0]} ({k[1]})"] = [f"{r.name} [state={r.state}]" for r in rows]
+    # True duplicates = same_person() AND state-compatible. This correctly
+    # MERGES "Tammy Duckworth"/"Ladda Tammy Duckworth" while KEEPING
+    # "Austin Scott"/"David Scott" (same last name, different people).
+    true_dupes = {}
+    used = set()
+    for i, a in enumerate(members):
+        if a.id in used:
+            continue
+        group = [a]
+        for b in members[i + 1:]:
+            if b.id in used:
+                continue
+            if a.chamber == b.chamber and same_person(a.name, b.name):
+                if not a.state or not b.state or a.state == b.state:
+                    group.append(b)
+                    used.add(b.id)
+        if len(group) > 1:
+            true_dupes[f"{a.name} ({a.chamber})"] = [m.name for m in group]
 
     return {
-        "is_clean": not dirty and not exact_dupes and not normalized_dupes
-                    and not lastname_state_dupes and not mixed_state,
+        "is_clean": not dirty and not true_dupes,
         "total_members": len(members),
         "dirty_names": dirty,
-        "exact_duplicates": exact_dupes,
-        "normalized_duplicates": normalized_dupes,
-        "lastname_state_duplicates": lastname_state_dupes,
-        "mixed_state_duplicates": mixed_state,
+        "duplicate_groups": true_dupes,
+    }
+
+
+@router.post("/admin/dedupe-smart")
+def dedupe_smart(db: Session = Depends(get_db)):
+    """Definitive dedupe using same_person() — merges same-person/different-spelling
+    rows (Ladda Tammy/Tammy Duckworth, Tim/Timothy Walberg) while keeping genuinely
+    different people who share a last name (Austin Scott vs David Scott).
+    """
+    from src.db.models import Member, MemberCommittee
+    from src.services.trade_service import same_person, normalize_member_name
+
+    members = db.query(Member).all()
+    # Bucket by (chamber) then greedily group by same_person
+    groups: list[list[Member]] = []
+    for m in members:
+        placed = False
+        for g in groups:
+            if g[0].chamber == m.chamber and same_person(g[0].name, m.name):
+                # also require state compatibility (one side null OR equal)
+                if not g[0].state or not m.state or g[0].state == m.state:
+                    g.append(m)
+                    placed = True
+                    break
+        if not placed:
+            groups.append([m])
+
+    merged = trades_moved = deleted = 0
+    actions = []
+    for g in groups:
+        if len(g) < 2:
+            continue
+        # keeper: most trades, then has party, then longest (most formal) name
+        g.sort(key=lambda m: (
+            db.query(Trade).filter(Trade.member_id == m.id).count(),
+            1 if m.party else 0,
+            len(m.name),
+        ), reverse=True)
+        keeper = g[0]
+        for d in g[1:]:
+            for f in ("party", "state", "district"):
+                if not getattr(keeper, f) and getattr(d, f):
+                    setattr(keeper, f, getattr(d, f))
+            n = db.query(Trade).filter(Trade.member_id == d.id).update({"member_id": keeper.id})
+            db.query(MemberCommittee).filter(MemberCommittee.member_id == d.id).update({"member_id": keeper.id})
+            trades_moved += n
+            actions.append({"keeper": keeper.name, "merged": d.name, "trades_moved": n})
+            db.delete(d)
+            deleted += 1
+        keeper.name = normalize_member_name(keeper.name)
+        merged += 1
+
+    db.commit()
+    return {
+        "groups_merged": merged,
+        "rows_deleted": deleted,
+        "trades_reassigned": trades_moved,
+        "actions": actions[:50],
+        "total_actions": len(actions),
     }
 
 
 @router.get("/admin/audit-members")
 def audit_members(db: Session = Depends(get_db)):
-    """Read-only audit of the member table. Reports anything that looks like
-    a duplicate or a dirty name. Returns 0 across the board when clean.
+    """Read-only audit of the member table using same_person() detection.
+    Returns is_clean=true when there are no dirty names and no true duplicates.
     """
-    from collections import defaultdict
-    from src.db.models import Member
-    from src.services.trade_service import normalize_member_name
-
-    def last_token(name: str) -> str:
-        toks = [t for t in name.replace(",", "").split()
-                if t.lower() not in {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}]
-        return toks[-1].lower() if toks else ""
-
-    members = db.query(Member).all()
-    total = len(members)
-
-    # 1. Dirty stored names — should be 0
-    dirty = [m.name for m in members if "Hon" in m.name or "," in m.name]
-
-    # 2. Exact (name, chamber) duplicate rows
-    by_exact: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for m in members:
-        by_exact[(m.name, m.chamber)].append(m.name)
-    exact_dupes = {f"{k[0]} ({k[1]})": v for k, v in by_exact.items() if len(v) > 1}
-
-    # 3. Same normalized-name + chamber
-    by_normalized: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for m in members:
-        by_normalized[(normalize_member_name(m.name), m.chamber)].append(m.name)
-    normalized_dupes = {
-        f"{k[0]} ({k[1]})": v for k, v in by_normalized.items() if len(v) > 1
-    }
-
-    # 4. Same (last_name, chamber, state) — high-confidence duplicate signal
-    by_lcs: dict[tuple[str, str, str | None], list[str]] = defaultdict(list)
-    for m in members:
-        by_lcs[(last_token(m.name), m.chamber, m.state)].append(m.name)
-    lastname_state_dupes = {
-        f"{k[0]} ({k[1]}, {k[2]})": v
-        for k, v in by_lcs.items()
-        if len(v) > 1 and k[0]
-    }
-
-    # 5. (last_name, chamber) where one row has state and another doesn't
-    by_lc: dict[tuple[str, str], list[Member]] = defaultdict(list)
-    for m in members:
-        by_lc[(last_token(m.name), m.chamber)].append(m)
-    mixed_state = {}
-    for k, rows in by_lc.items():
-        if len(rows) > 1 and k[0]:
-            has_null = any(not r.state for r in rows)
-            has_set = any(r.state for r in rows)
-            if has_null and has_set:
-                mixed_state[f"{k[0]} ({k[1]})"] = [
-                    f"{r.name} [state={r.state}]" for r in rows
-                ]
-
-    is_clean = (
-        not dirty and not exact_dupes and not normalized_dupes
-        and not lastname_state_dupes and not mixed_state
-    )
-
-    return {
-        "is_clean": is_clean,
-        "total_members": total,
-        "dirty_names": dirty,
-        "exact_duplicates": exact_dupes,
-        "normalized_duplicates": normalized_dupes,
-        "lastname_state_duplicates": lastname_state_dupes,
-        "mixed_state_duplicates": mixed_state,
-    }
+    return _member_audit(db)
 
 
 @router.post("/admin/normalize-member-names")

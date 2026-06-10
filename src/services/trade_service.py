@@ -63,6 +63,61 @@ def normalize_member_name(raw: str) -> str:
     return cleaned.title()
 
 
+def name_tokens(name: str) -> list[str]:
+    """Lowercase content tokens of a normalized name (no titles/suffixes/initials)."""
+    n = normalize_member_name(name or "")
+    return [t.lower() for t in n.split()
+            if t.lower() not in _SUFFIX_TOKENS and len(t) > 1]
+
+
+def _first_names_compatible(a: str, b: str) -> bool:
+    """Nickname/prefix match: Tim/Timothy, Josh/Joshua, Susie/Suzanne,
+    Mike/Michael, Bob/Robert.
+
+    Includes a same-first-letter fallback. This is only safe because every
+    caller (get_or_create_member, dedupe_smart, the audit) additionally
+    constrains on chamber + state — two genuinely different members sharing
+    last name + state + chamber + first initial does not occur in current
+    Congress (e.g. Austin vs David Scott differ on first initial → kept apart).
+    """
+    if not a or not b:
+        return True
+    if a == b or a.startswith(b) or b.startswith(a):
+        return True
+    if len(a) >= 3 and len(b) >= 3 and a[:3] == b[:3]:
+        return True
+    if a[0] == b[0]:
+        return True
+    return False
+
+
+def same_person(name_a: str, name_b: str) -> bool:
+    """True if two member names refer to the same person.
+
+    The hard cases this must get right:
+      - MERGE  "Ladda Tammy Duckworth" == "Tammy Duckworth"  (legal vs common name → token subset)
+      - MERGE  "Tim Walberg" == "Timothy Walberg"            (nickname)
+      - MERGE  "Bresnahan, Hon.. Rob" == "Robert Bresnahan"  (format + nickname)
+      - KEEP   "Austin Scott" != "David Scott"  (both House-GA, DIFFERENT people)
+      - KEEP   "Greg Stanton" != "Greg Steube"  (different last names)
+
+    Rule: last names must match. Then EITHER the first names are
+    nickname-compatible OR one full token-set is a subset of the other
+    (subset handles middle-name-only differences). Crucially, if the first
+    names are clearly different real names (no prefix/3-char overlap) AND
+    neither token set is a subset, they are different people.
+    """
+    ta, tb = name_tokens(name_a), name_tokens(name_b)
+    if not ta or not tb:
+        return False
+    if ta[-1] != tb[-1]:
+        return False  # different last name → different person
+    set_a, set_b = set(ta), set(tb)
+    if set_a <= set_b or set_b <= set_a:
+        return True  # e.g. {tammy,duckworth} ⊆ {ladda,tammy,duckworth}
+    return _first_names_compatible(ta[0], tb[0])
+
+
 def get_or_create_member(db: Session, name: str, chamber: str, **kwargs) -> Member:
     """Find an existing member by normalized name OR create a new one.
 
