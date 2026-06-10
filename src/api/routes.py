@@ -1194,6 +1194,42 @@ def env_check():
     return {"vars": out, "railway": rail}
 
 
+@router.get("/admin/uw-debug")
+async def uw_debug():
+    """Raw diagnostic for the UW unusual-trades endpoint — surfaces HTTP status
+    and the raw top-level response shape so we can see why anomaly-feed is empty
+    (tier restriction? different response key? genuinely no data?).
+    """
+    import os
+    import httpx
+    token = os.environ.get("UW_API_TOKEN", "").strip()
+    if not token:
+        return {"error": "UW_API_TOKEN not set"}
+    out = {}
+    async with httpx.AsyncClient(timeout=30) as client:
+        for path in ["/congress/unusual-trades", "/congress/unusual-trades/stats", "/congress/late-reports"]:
+            try:
+                r = await client.get(
+                    f"https://api.unusualwhales.com/api{path}",
+                    params={"limit": 5},
+                    headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                )
+                body = r.text[:600]
+                shape = None
+                try:
+                    j = r.json()
+                    if isinstance(j, dict):
+                        shape = {k: (f"list[{len(v)}]" if isinstance(v, list) else type(v).__name__) for k, v in j.items()}
+                    elif isinstance(j, list):
+                        shape = f"list[{len(j)}]"
+                except Exception:
+                    pass
+                out[path] = {"status": r.status_code, "shape": shape, "raw_preview": body}
+            except Exception as e:
+                out[path] = {"error": str(e)}
+    return out
+
+
 @router.get("/anomaly-feed")
 async def anomaly_feed(types: str | None = None, limit: int = 200):
     """Congressional trades flagged as unusual by Unusual Whales, with reason tags.

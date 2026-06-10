@@ -854,6 +854,12 @@ const ANOM_TAG_LABELS = {
   fec_donation_conflict: 'FEC Donation Conflict',
 };
 
+function cellTrunc(html, titleText) {
+  // Truncate a cell to its column width with ellipsis; full text on hover.
+  const title = (titleText || '').replace(/"/g, '&quot;');
+  return '<div title="' + title + '" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + html + '</div>';
+}
+
 function anomTagBadges(tags) {
   if (!tags) return '';
   const arr = Array.isArray(tags) ? tags : [tags];
@@ -881,20 +887,22 @@ async function loadAnomalyFeed() {
       res.innerHTML = '<div class="empty">No unusual trades flagged right now' + (type ? ' for that tag' : '') + '. These are rare events — check back or try a different tag.</div>';
       return;
     }
-    let h = '<table><thead><tr><th>MEMBER</th><th>TICKER</th><th>TYPE</th><th>AMOUNT</th><th>TX DATE</th><th>FLAGS</th></tr></thead><tbody>';
+    let h = '<div style="overflow-x:auto"><table style="table-layout:fixed;width:100%;min-width:760px">';
+    h += '<colgroup><col style="width:18%"><col style="width:8%"><col style="width:9%"><col style="width:15%"><col style="width:11%"><col style="width:39%"></colgroup>';
+    h += '<thead><tr><th>MEMBER</th><th>TICKER</th><th>TYPE</th><th>AMOUNT</th><th>TX DATE</th><th>FLAGS</th></tr></thead><tbody>';
     for (const t of trades) {
       const name = t.name || t.reporter || '?';
       const tags = t.tags || t.unusual_types || t.types;
       h += '<tr>';
-      h += '<td><strong>' + escapeHtml(name) + '</strong> <span style="font-size:10px;color:var(--gray)">' + escapeHtml((t.current_chamber||t.member_type||'')) + '</span></td>';
+      h += '<td>' + cellTrunc('<strong>' + escapeHtml(name) + '</strong>', name) + '</td>';
       h += '<td>' + escapeHtml(t.ticker || '-') + '</td>';
-      h += '<td>' + escapeHtml(t.txn_type || '-') + '</td>';
-      h += '<td>' + escapeHtml(t.amounts || '-') + '</td>';
-      h += '<td>' + escapeHtml((t.transaction_date||'').slice(0,10)) + '</td>';
+      h += '<td style="font-size:11px">' + escapeHtml((t.txn_type || '-').slice(0,12)) + '</td>';
+      h += '<td style="font-size:11px;white-space:nowrap">' + escapeHtml(t.amounts || '-') + '</td>';
+      h += '<td style="white-space:nowrap">' + escapeHtml((t.transaction_date||'').slice(0,10)) + '</td>';
       h += '<td>' + anomTagBadges(tags) + '</td>';
       h += '</tr>';
     }
-    h += '</tbody></table>';
+    h += '</tbody></table></div>';
     res.innerHTML = h;
   } catch(e) {
     res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Error: ' + escapeHtml(e.message) + '</div>';
@@ -918,19 +926,23 @@ async function loadLateFilers() {
       res.innerHTML = '<div class="answer" style="border-left-color:var(--green);background:#f0fff4">✓ No late filers reported right now.</div>';
       return;
     }
-    let h = '<table><thead><tr><th>MEMBER</th><th>TICKER</th><th>TYPE</th><th>AMOUNT</th><th>TX DATE</th><th>FILED</th></tr></thead><tbody>';
+    let h = '<div style="overflow-x:auto"><table style="table-layout:fixed;width:100%;min-width:820px">';
+    h += '<colgroup><col style="width:16%"><col style="width:8%"><col style="width:30%"><col style="width:8%"><col style="width:15%"><col style="width:11.5%"><col style="width:11.5%"></colgroup>';
+    h += '<thead><tr><th>MEMBER</th><th>TICKER</th><th>ASSET</th><th>TYPE</th><th>AMOUNT</th><th>TX DATE</th><th>FILED</th></tr></thead><tbody>';
     for (const t of late) {
       const name = t.name || t.reporter || '?';
+      const asset = t.issuer || t.notes || '';
       h += '<tr>';
-      h += '<td><strong>' + escapeHtml(name) + '</strong> <span style="font-size:10px;color:var(--gray)">' + escapeHtml((t.member_type||'')) + '</span></td>';
+      h += '<td>' + cellTrunc('<strong>' + escapeHtml(name) + '</strong>', name) + '</td>';
       h += '<td>' + escapeHtml(t.ticker || '-') + '</td>';
-      h += '<td>' + escapeHtml(t.txn_type || '-') + '</td>';
-      h += '<td>' + escapeHtml(t.amounts || '-') + '</td>';
-      h += '<td>' + escapeHtml((t.transaction_date||'').slice(0,10)) + '</td>';
-      h += '<td>' + escapeHtml((t.filed_at_date||'').slice(0,10)) + '</td>';
+      h += '<td>' + cellTrunc(escapeHtml(asset || '-'), asset) + '</td>';
+      h += '<td style="font-size:11px">' + escapeHtml((t.txn_type || '-').slice(0,12)) + '</td>';
+      h += '<td style="font-size:11px;white-space:nowrap">' + escapeHtml(t.amounts || '-') + '</td>';
+      h += '<td style="white-space:nowrap">' + escapeHtml((t.transaction_date||'').slice(0,10)) + '</td>';
+      h += '<td style="white-space:nowrap">' + escapeHtml((t.filed_at_date||'').slice(0,10)) + '</td>';
       h += '</tr>';
     }
-    h += '</tbody></table>';
+    h += '</tbody></table></div>';
     res.innerHTML = h;
   } catch(e) {
     res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Error: ' + escapeHtml(e.message) + '</div>';
