@@ -1470,7 +1470,7 @@ def _member_audit(db: Session) -> dict:
 
 
 @router.get("/admin/backfill-one")
-async def backfill_one(name: str, max_pages: int = 200, db: Session = Depends(get_db)):
+async def backfill_one(name: str, max_pages: int = 200, start_page: int = 1, db: Session = Depends(get_db)):
     """Synchronously deep-scrape ONE politician via Capitol Trades and ingest.
 
     Runs in-request (not a background task) because FastAPI BackgroundTasks
@@ -1502,10 +1502,16 @@ async def backfill_one(name: str, max_pages: int = 200, db: Session = Depends(ge
         if not ids:
             return {"name": name, "bioguide": None, "scraped": 0, "new": 0, "note": "not found on CT"}
         bio_id = ids[0]
-        trades = await _scrape_politician_trades(client, bio_id, 96, max_pages=max_pages)
+        trades = await _scrape_politician_trades(
+            client, bio_id, 96, max_pages=max_pages, start_page=start_page
+        )
 
     new = ingest_trades(db, trades) if trades else 0
-    return {"name": name, "bioguide": bio_id, "scraped": len(trades), "new": new}
+    return {
+        "name": name, "bioguide": bio_id, "start_page": start_page,
+        "scraped": len(trades), "new": new,
+        "exhausted": len(trades) < max_pages * 96 * 0.5,  # likely last window
+    }
 
 
 @router.post("/admin/dedupe-smart")

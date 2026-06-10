@@ -530,15 +530,17 @@ async def _scrape_politician_trades(
     politician_id: str,
     page_size: int = 96,
     max_pages: int = 200,
+    start_page: int = 1,
 ) -> list[dict]:
-    """Scrape all trades for a specific politician using the filtered endpoint.
+    """Scrape trades for a specific politician using the filtered endpoint.
 
-    Default cap raised to 200 pages (~19,200 trades) so high-volume traders
-    like Ro Khanna (13k+ trades) and Michael McCaul (9k+) get fully captured
-    instead of truncated at the old 20-page / ~1,920 limit.
+    Supports a page window via start_page so callers can chunk a high-volume
+    trader's history across several bounded requests (avoids request timeouts
+    on whales like Ro Khanna with 138+ pages). Scrapes pages
+    [start_page, start_page + max_pages).
     """
     all_trades = []
-    for page in range(1, max_pages + 1):
+    for page in range(start_page, start_page + max_pages):
         url = f"{BASE_URL}?politician={politician_id}&page={page}&pageSize={page_size}"
         try:
             resp = await client.get(url)
