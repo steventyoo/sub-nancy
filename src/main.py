@@ -876,6 +876,11 @@ async function loadAnomalyFeed() {
   try {
     const resp = await fetch('/api/anomaly-feed?limit=200' + (type ? '&types=' + encodeURIComponent(type) : ''));
     const data = await resp.json();
+    if (data.premium_required) {
+      document.getElementById('anom-badge').style.display = 'none';
+      res.innerHTML = '<div class="answer" style="border-left-color:#d4a017;background:#fffbea">⭐ ' + escapeHtml(data.message) + '</div>';
+      return;
+    }
     if (data.error) {
       res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">' + escapeHtml(data.error) + ' — set UW_API_TOKEN in Railway.</div>';
       return;

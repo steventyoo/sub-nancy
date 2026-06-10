@@ -1240,10 +1240,31 @@ async def anomaly_feed(types: str | None = None, limit: int = 200):
     available from scraping).
     """
     import os
-    if not os.environ.get("UW_API_TOKEN", "").strip():
+    import httpx
+    token = os.environ.get("UW_API_TOKEN", "").strip()
+    if not token:
         return {"error": "UW_API_TOKEN not set", "trades": []}
-    from src.scrapers.uw_api import fetch_unusual_trades
-    rows = await fetch_unusual_trades(types=types, limit=min(limit, 500), max_pages=3)
+    # Direct call so we can detect the premium-tier gate (HTTP 422 with a
+    # "premium endpoint" message) and report it cleanly to the UI.
+    params = {"limit": min(limit, 500)}
+    if types:
+        params["types"] = types
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(
+            "https://api.unusualwhales.com/api/congress/unusual-trades",
+            params=params,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        )
+    if r.status_code == 422 and "premium" in r.text.lower():
+        return {
+            "premium_required": True,
+            "message": "The Anomaly Feed requires the Unusual Whales premium API tier. "
+                       "Contact dev@unusualwhales.com or upgrade your plan to enable it.",
+            "trades": [],
+        }
+    if r.status_code != 200:
+        return {"error": f"UW API returned {r.status_code}", "trades": []}
+    rows = r.json().get("data", []) if r.headers.get("content-type", "").startswith("application/json") else []
     return {"count": len(rows), "types_filter": types, "trades": rows[:limit]}
 
 
