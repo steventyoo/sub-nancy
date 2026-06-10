@@ -15,6 +15,37 @@ _TITLE_TOKENS = {"hon", "hon.", "hon..", "rep", "rep.", "sen", "sen.", "dr", "dr
                  "mr", "mr.", "mrs", "mrs.", "ms", "ms."}
 _SUFFIX_TOKENS = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}
 
+# Canonical display names for members whose sources disagree on first name
+# (legal name vs the name they go by). Keyed by lowercased last name.
+# These can't be derived algorithmically (Addison ≠ Mitch) so we map them.
+_CANONICAL_NAMES = {
+    "mcconnell": "Mitch McConnell",
+}
+
+
+def _proper_case_token(tok: str) -> str:
+    """Capitalize a name token correctly: McConnell, MacArthur, O'Brien,
+    Van Hollen, hyphenated names, Roman-numeral suffixes.
+    """
+    low = tok.lower()
+    if low in ("ii", "iii", "iv", "v", "vi"):
+        return tok.upper()
+    if "-" in tok:
+        return "-".join(_proper_case_token(p) for p in tok.split("-"))
+    if low.startswith("mc") and len(tok) > 2:
+        return "Mc" + tok[2:].capitalize()
+    if low.startswith("mac") and len(tok) > 4 and low not in ("mack", "macey", "macie"):
+        return "Mac" + tok[3:].capitalize()
+    if low.startswith("o'") and len(tok) > 2:
+        return "O'" + tok[2:].capitalize()
+    if low.startswith("d'") and len(tok) > 2:
+        return "D'" + tok[2:].capitalize()
+    return tok.capitalize()
+
+
+def _proper_case(name: str) -> str:
+    return " ".join(_proper_case_token(t) for t in name.split())
+
 
 def normalize_member_name(raw: str) -> str:
     """Normalize a politician name into a canonical "First Last" form.
@@ -42,7 +73,7 @@ def normalize_member_name(raw: str) -> str:
         if len(parts) == 2:
             s = f"{parts[1]} {parts[0]}"
 
-    # Tokenize, strip honorifics + suffixes, drop empty tokens
+    # Tokenize, strip honorifics + suffixes + standalone initials
     tokens = []
     for tok in s.split():
         low = tok.lower().rstrip(".,")
@@ -50,17 +81,24 @@ def normalize_member_name(raw: str) -> str:
             continue
         if low in _SUFFIX_TOKENS:
             continue
-        # Drop standalone middle initials like "F" or "F." for the matching key —
-        # they were the cause of "Michael Bennet" vs "Michael F Bennet" splits.
-        if len(low) <= 2 and low.endswith("."):
+        # Drop standalone initials anywhere ("A.", "F", "B.") — these cause
+        # "A. Mitchell Mcconnell" / "Michael F Bennet" style noise and split rows.
+        if tok.endswith(".") and len(low) <= 1:
             continue
         if len(low) == 1 and tok.isalpha():
             continue
         tokens.append(tok)
 
     cleaned = " ".join(tokens)
-    # Title-case (handles "Mcconnell" → "Mcconnell" etc. — good enough)
-    return cleaned.title()
+    result = _proper_case(cleaned)
+
+    # Apply canonical-name override for known legal-vs-common mismatches
+    parts = result.split()
+    if parts:
+        canon = _CANONICAL_NAMES.get(parts[-1].lower())
+        if canon:
+            return canon
+    return result
 
 
 def name_tokens(name: str) -> list[str]:
