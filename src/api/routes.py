@@ -1321,7 +1321,7 @@ async def slack_daily_summary(db: Session = Depends(get_db)):
     # Link to dashboard
     blocks.append({
         "type": "context",
-        "elements": [{"type": "mrkdwn", "text": "<https://sub-nancy-production.up.railway.app/|Open Sub-Nancy Dashboard> · <https://sub-nancy-production.up.railway.app/#tidal|Tidal Coverage Tab>"}]
+        "elements": [{"type": "mrkdwn", "text": "<https://sub-nancy-production.up.railway.app/|Open Sub-Nancy Dashboard> · <https://sub-nancy-production.up.railway.app/|Coverage Audit Tab>"}]
     })
 
     payload = {

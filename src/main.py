@@ -542,7 +542,7 @@ DASHBOARD_HTML = """
   <div class="nav-tab" onclick="showTab('query')">Query</div>
   <div class="nav-tab" onclick="showTab('browse')">Browse</div>
   <div class="nav-tab" onclick="showTab('subscribe')">Alerts</div>
-  <div class="nav-tab" onclick="showTab('tidal')">Tidal</div>
+  <div class="nav-tab" onclick="showTab('tidal')">Audit</div>
   <div class="nav-tab" onclick="showTab('anomaly')">Anomaly Feed</div>
   <div class="nav-tab" onclick="showTab('latefilers')">Late Filers</div>
 </div>
@@ -759,7 +759,7 @@ DASHBOARD_HTML = """
   <!-- TIDAL TAB -->
   <div id="tab-tidal" style="display:none">
     <div style="display:flex;justify-content:space-between;align-items:center">
-      <div class="section-title">Tidal Coverage Audit</div>
+      <div class="section-title">Coverage Audit</div>
       <div>
         <button class="btn btn-primary" onclick="runTidalAudit()" style="font-size:11px;padding:10px 18px">Re-run Audit</button>
         <button class="btn btn-primary" onclick="runTidalBackfill()" style="font-size:11px;padding:10px 18px;margin-left:8px">Backfill Gaps</button>
