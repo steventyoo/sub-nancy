@@ -1171,6 +1171,29 @@ def _run_backfill_discrepancies():
         logger.error(f"Backfill outer failure: {e}", exc_info=True)
 
 
+@router.get("/admin/env-check")
+def env_check():
+    """Diagnostic: report which expected env vars are visible to the running
+    process. Returns presence + length only — never the secret values.
+    """
+    import os
+    watch = [
+        "UW_API_TOKEN", "SLACK_WEBHOOK_URL", "ANTHROPIC_API_KEY",
+        "DATABASE_URL", "RESEND_API_KEY", "FINNHUB_API_KEY",
+        "EMAIL_FROM", "EMAIL_HOUR", "SCRAPE_INTERVAL_HOURS",
+    ]
+    out = {}
+    for k in watch:
+        v = os.environ.get(k)
+        out[k] = {"present": v is not None, "length": len(v) if v else 0}
+    # Also report Railway environment identifiers if present
+    rail = {
+        k: os.environ.get(k)
+        for k in ("RAILWAY_ENVIRONMENT_NAME", "RAILWAY_SERVICE_NAME", "RAILWAY_PROJECT_NAME")
+    }
+    return {"vars": out, "railway": rail}
+
+
 @router.get("/anomaly-feed")
 async def anomaly_feed(types: str | None = None, limit: int = 200):
     """Congressional trades flagged as unusual by Unusual Whales, with reason tags.
