@@ -1469,6 +1469,45 @@ def _member_audit(db: Session) -> dict:
     }
 
 
+@router.get("/admin/backfill-one")
+async def backfill_one(name: str, max_pages: int = 200, db: Session = Depends(get_db)):
+    """Synchronously deep-scrape ONE politician via Capitol Trades and ingest.
+
+    Runs in-request (not a background task) because FastAPI BackgroundTasks
+    don't reliably complete long async work on this Railway deploy — the
+    proven-reliable pattern is synchronous execution (same as the Bresnahan
+    debug endpoint that worked). Resolve the bioguide via CT name search,
+    deep-scrape, ingest, return the count. Call this in a loop over the gap list.
+    """
+    import re as _re
+    import httpx
+    from src.scrapers.capitol_trades import _scrape_politician_trades
+    from src.services.trade_service import ingest_trades
+
+    last = name.strip().split()[-1] if name.strip() else ""
+    if not last:
+        return {"error": "no name"}
+
+    async with httpx.AsyncClient(
+        timeout=60, follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+    ) as client:
+        # Resolve bioguide via CT search
+        try:
+            sr = await client.get(f"https://www.capitoltrades.com/politicians?search={last}")
+            ids = list(dict.fromkeys(_re.findall(r'/politicians/([A-Z]\d+)', sr.text)))
+        except Exception as e:
+            return {"error": f"search failed: {e}"}
+        if not ids:
+            return {"name": name, "bioguide": None, "scraped": 0, "new": 0, "note": "not found on CT"}
+        bio_id = ids[0]
+        trades = await _scrape_politician_trades(client, bio_id, 96, max_pages=max_pages)
+
+    new = ingest_trades(db, trades) if trades else 0
+    return {"name": name, "bioguide": bio_id, "scraped": len(trades), "new": new}
+
+
 @router.post("/admin/dedupe-smart")
 def dedupe_smart(db: Session = Depends(get_db)):
     """Definitive dedupe using same_person() — merges same-person/different-spelling
