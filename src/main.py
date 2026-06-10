@@ -543,6 +543,8 @@ DASHBOARD_HTML = """
   <div class="nav-tab" onclick="showTab('browse')">Browse</div>
   <div class="nav-tab" onclick="showTab('subscribe')">Alerts</div>
   <div class="nav-tab" onclick="showTab('tidal')">Tidal</div>
+  <div class="nav-tab" onclick="showTab('anomaly')">Anomaly Feed</div>
+  <div class="nav-tab" onclick="showTab('latefilers')">Late Filers</div>
 </div>
 
 <div class="container">
@@ -775,6 +777,38 @@ DASHBOARD_HTML = """
     </div>
   </div>
 
+  <!-- ANOMALY FEED TAB -->
+  <div id="tab-anomaly" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div class="section-title">Anomaly Feed <span class="count-badge" id="anom-badge" style="display:none"></span></div>
+    </div>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 16px">Congressional trades flagged as unusual by Unusual Whales — the alpha signal. Filter by reason tag.</p>
+    <div class="filters" style="margin-bottom:20px">
+      <select class="filter-select" id="anom-type" onchange="loadAnomalyFeed()">
+        <option value="">All Anomaly Types</option>
+        <option value="committee_conflict">Committee Conflict</option>
+        <option value="first_person_to_trade">First to Trade</option>
+        <option value="unusually_large_trade">Unusually Large</option>
+        <option value="low_marketcap">Low Market Cap</option>
+        <option value="unusual_industry">Unusual Industry</option>
+        <option value="fec_donation_conflict">FEC Donation Conflict</option>
+      </select>
+      <button class="btn btn-primary" onclick="loadAnomalyFeed()" style="font-size:11px;padding:10px 18px">Refresh</button>
+    </div>
+    <div class="results-section" id="anomaly-results">
+      <div class="empty">Loading anomaly feed...</div>
+    </div>
+  </div>
+
+  <!-- LATE FILERS TAB -->
+  <div id="tab-latefilers" style="display:none">
+    <div class="section-title">Late Filers <span class="count-badge" id="late-badge" style="display:none"></span></div>
+    <p style="color:var(--gray);font-size:13px;margin:0 0 16px">Members late on their STOCK Act periodic transaction reports. Late disclosure can mask trade timing — a compliance and insider-signal flag.</p>
+    <div class="results-section" id="latefilers-results">
+      <div class="empty">Loading late filers...</div>
+    </div>
+  </div>
+
 </div>
 
 <div class="footer">
@@ -790,7 +824,7 @@ DASHBOARD_HTML = """
 </div>
 
 <script>
-const TABS = ['dashboard','recent','leaderboard','screener','query','browse','subscribe','tidal'];
+const TABS = ['dashboard','recent','leaderboard','screener','query','browse','subscribe','tidal','anomaly','latefilers'];
 let _previousTab = 'dashboard';
 function showTab(name) {
   _previousTab = name;
@@ -807,6 +841,100 @@ function showTab(name) {
   if (name === 'leaderboard' && !window._lbLoaded) { loadLeaderboard(); window._lbLoaded = true; }
   if (name === 'screener' && !window._scLoaded) { loadScreener(); window._scLoaded = true; }
   if (name === 'tidal' && !window._tidalLoaded) { runTidalAudit(); window._tidalLoaded = true; }
+  if (name === 'anomaly' && !window._anomLoaded) { loadAnomalyFeed(); window._anomLoaded = true; }
+  if (name === 'latefilers' && !window._lateLoaded) { loadLateFilers(); window._lateLoaded = true; }
+}
+
+const ANOM_TAG_LABELS = {
+  committee_conflict: 'Committee Conflict',
+  first_person_to_trade: 'First to Trade',
+  unusually_large_trade: 'Unusually Large',
+  low_marketcap: 'Low Market Cap',
+  unusual_industry: 'Unusual Industry',
+  fec_donation_conflict: 'FEC Donation Conflict',
+};
+
+function anomTagBadges(tags) {
+  if (!tags) return '';
+  const arr = Array.isArray(tags) ? tags : [tags];
+  return arr.map(t => {
+    const label = ANOM_TAG_LABELS[t] || t;
+    return '<span style="background:#fce4ec;color:#c0392b;padding:2px 8px;font-size:10px;font-family:IBM Plex Mono,monospace;font-weight:600;margin-right:4px;border-radius:2px">' + escapeHtml(label) + '</span>';
+  }).join('');
+}
+
+async function loadAnomalyFeed() {
+  const res = document.getElementById('anomaly-results');
+  res.innerHTML = '<div class="loading"><span class="spinner"></span> Loading anomaly feed...</div>';
+  const type = document.getElementById('anom-type').value;
+  try {
+    const resp = await fetch('/api/anomaly-feed?limit=200' + (type ? '&types=' + encodeURIComponent(type) : ''));
+    const data = await resp.json();
+    if (data.error) {
+      res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">' + escapeHtml(data.error) + ' — set UW_API_TOKEN in Railway.</div>';
+      return;
+    }
+    const trades = data.trades || [];
+    const badge = document.getElementById('anom-badge');
+    badge.textContent = trades.length + ' flagged'; badge.style.display = 'inline-block';
+    if (trades.length === 0) {
+      res.innerHTML = '<div class="empty">No unusual trades flagged right now' + (type ? ' for that tag' : '') + '. These are rare events — check back or try a different tag.</div>';
+      return;
+    }
+    let h = '<table><thead><tr><th>MEMBER</th><th>TICKER</th><th>TYPE</th><th>AMOUNT</th><th>TX DATE</th><th>FLAGS</th></tr></thead><tbody>';
+    for (const t of trades) {
+      const name = t.name || t.reporter || '?';
+      const tags = t.tags || t.unusual_types || t.types;
+      h += '<tr>';
+      h += '<td><strong>' + escapeHtml(name) + '</strong> <span style="font-size:10px;color:var(--gray)">' + escapeHtml((t.current_chamber||t.member_type||'')) + '</span></td>';
+      h += '<td>' + escapeHtml(t.ticker || '-') + '</td>';
+      h += '<td>' + escapeHtml(t.txn_type || '-') + '</td>';
+      h += '<td>' + escapeHtml(t.amounts || '-') + '</td>';
+      h += '<td>' + escapeHtml((t.transaction_date||'').slice(0,10)) + '</td>';
+      h += '<td>' + anomTagBadges(tags) + '</td>';
+      h += '</tr>';
+    }
+    h += '</tbody></table>';
+    res.innerHTML = h;
+  } catch(e) {
+    res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Error: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+async function loadLateFilers() {
+  const res = document.getElementById('latefilers-results');
+  res.innerHTML = '<div class="loading"><span class="spinner"></span> Loading late filers...</div>';
+  try {
+    const resp = await fetch('/api/late-filers?limit=200');
+    const data = await resp.json();
+    if (data.error) {
+      res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">' + escapeHtml(data.error) + ' — set UW_API_TOKEN in Railway.</div>';
+      return;
+    }
+    const late = data.late || [];
+    const badge = document.getElementById('late-badge');
+    badge.textContent = late.length + ' late'; badge.style.display = 'inline-block';
+    if (late.length === 0) {
+      res.innerHTML = '<div class="answer" style="border-left-color:var(--green);background:#f0fff4">✓ No late filers reported right now.</div>';
+      return;
+    }
+    let h = '<table><thead><tr><th>MEMBER</th><th>TICKER</th><th>TYPE</th><th>AMOUNT</th><th>TX DATE</th><th>FILED</th></tr></thead><tbody>';
+    for (const t of late) {
+      const name = t.name || t.reporter || '?';
+      h += '<tr>';
+      h += '<td><strong>' + escapeHtml(name) + '</strong> <span style="font-size:10px;color:var(--gray)">' + escapeHtml((t.member_type||'')) + '</span></td>';
+      h += '<td>' + escapeHtml(t.ticker || '-') + '</td>';
+      h += '<td>' + escapeHtml(t.txn_type || '-') + '</td>';
+      h += '<td>' + escapeHtml(t.amounts || '-') + '</td>';
+      h += '<td>' + escapeHtml((t.transaction_date||'').slice(0,10)) + '</td>';
+      h += '<td>' + escapeHtml((t.filed_at_date||'').slice(0,10)) + '</td>';
+      h += '</tr>';
+    }
+    h += '</tbody></table>';
+    res.innerHTML = h;
+  } catch(e) {
+    res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Error: ' + escapeHtml(e.message) + '</div>';
+  }
 }
 
 async function runTidalAudit() {
