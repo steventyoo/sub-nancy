@@ -1469,6 +1469,46 @@ def _member_audit(db: Session) -> dict:
     }
 
 
+@router.post("/admin/ingest-trades")
+def ingest_trades_endpoint(payload: dict, db: Session = Depends(get_db)):
+    """Accept a batch of pre-scraped trades and ingest them.
+
+    This is the non-Railway-IP backfill path: scraping runs from a machine
+    whose IP Capitol Trades doesn't throttle (e.g. a laptop), and the results
+    are POSTed here. Only a normal JSON POST hits Railway — no scraping from
+    Railway's blocked IP. Body: {"trades": [ {trade dict}, ... ]}.
+    Dates may be ISO strings; they're parsed back to datetimes.
+    """
+    from datetime import datetime as _dt
+    from src.services.trade_service import ingest_trades
+
+    raw = payload.get("trades", [])
+    if not isinstance(raw, list) or not raw:
+        return {"error": "body must be {\"trades\": [...]}", "new": 0}
+
+    def _d(v):
+        if not v:
+            return None
+        if isinstance(v, str):
+            for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S.%f"):
+                try:
+                    return _dt.strptime(v[:26], fmt)
+                except ValueError:
+                    continue
+            try:
+                return _dt.fromisoformat(v.replace("Z", "+00:00")).replace(tzinfo=None)
+            except (ValueError, AttributeError):
+                return None
+        return v
+
+    for t in raw:
+        t["transaction_date"] = _d(t.get("transaction_date"))
+        t["filing_date"] = _d(t.get("filing_date"))
+
+    new = ingest_trades(db, raw)
+    return {"received": len(raw), "new": new}
+
+
 @router.get("/admin/backfill-one")
 async def backfill_one(name: str, max_pages: int = 200, start_page: int = 1, db: Session = Depends(get_db)):
     """Synchronously deep-scrape ONE politician via Capitol Trades and ingest.
