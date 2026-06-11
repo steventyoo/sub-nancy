@@ -811,15 +811,19 @@ DASHBOARD_HTML = """
 
 </div>
 
-<div class="footer">
-  <div class="footer-text">Subversive ETF &copy; 2026</div>
-  <div class="footer-text">Data from Senate &amp; Capitol Trades<span class="count-badge" id="footer-count">Loading...</span></div>
-  <div class="footer-sources" style="margin-top:12px;font-size:11px;opacity:0.7;line-height:1.8">
+<div class="footer" style="align-items:flex-start">
+  <div class="footer-text">
+    <div>Subversive ETF &copy; 2026</div>
+    <div style="margin-top:8px">Last scrape: <span id="footer-last-scrape">—</span></div>
+    <div style="margin-top:4px"><span class="count-badge" id="footer-count">Loading...</span></div>
+  </div>
+  <div class="footer-sources" style="font-size:11px;opacity:0.7;line-height:1.8;text-align:right">
     <div style="font-weight:600;margin-bottom:4px;letter-spacing:1px;text-transform:uppercase">Data Sources</div>
-    <div><a href="https://www.capitoltrades.com" target="_blank" style="color:inherit">Capitol Trades</a> — Primary source for House &amp; Senate trades</div>
-    <div><a href="https://github.com/timothycarambat/senate-stock-watcher-data" target="_blank" style="color:inherit">Senate Stock Watcher</a> — Historical Senate financial disclosures</div>
-    <div><a href="https://clerk.house.gov" target="_blank" style="color:inherit">House Clerk</a> — Official House PTR filing metadata</div>
-    <div><a href="https://finnhub.io" target="_blank" style="color:inherit">Finnhub</a> — Cross-reference congressional trading data</div>
+    <div><a href="https://unusualwhales.com" target="_blank" style="color:inherit">Unusual Whales</a> — Primary live feed (API)</div>
+    <div><a href="https://www.capitoltrades.com" target="_blank" style="color:inherit">Capitol Trades</a> — House &amp; Senate trade history</div>
+    <div><a href="https://efdsearch.senate.gov" target="_blank" style="color:inherit">Senate eFD</a> — Official Senate disclosures</div>
+    <div><a href="https://clerk.house.gov" target="_blank" style="color:inherit">House Clerk</a> — Official House PTR filings</div>
+    <div><a href="https://finnhub.io" target="_blank" style="color:inherit">Finnhub</a> — Cross-reference data</div>
   </div>
 </div>
 
@@ -1096,7 +1100,22 @@ function clearFilters() {
   loadRecent();
 }
 
-document.addEventListener('DOMContentLoaded', () => { loadDashboard(); window._dashLoaded = true; });
+async function loadFooter() {
+  try {
+    const h = await (await fetch('/api/health')).json();
+    if (h.total_trades) document.getElementById('footer-count').textContent = h.total_trades.toLocaleString() + ' Trades';
+    const el = document.getElementById('footer-last-scrape');
+    if (h.last_scrape_at) {
+      const d = new Date(h.last_scrape_at + 'Z');
+      el.textContent = d.toLocaleString(undefined, {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) +
+        (h.last_scrape_new_trades != null ? ' (+' + h.last_scrape_new_trades + ' new)' : '');
+    } else {
+      el.textContent = 'in progress…';
+    }
+  } catch(e) { /* leave defaults */ }
+}
+
+document.addEventListener('DOMContentLoaded', () => { loadDashboard(); loadFooter(); window._dashLoaded = true; });
 
 function setQ(q) {
   document.getElementById('question').value = q;
