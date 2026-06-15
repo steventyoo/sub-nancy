@@ -829,19 +829,22 @@ def _run_scrape(mode: str = "daily"):
         finnhub_trades = loop.run_until_complete(scrape_finnhub_congress())
         logger.info(f"Finnhub: {len(finnhub_trades)} trades scraped")
 
-        # Unusual Whales: prefer the authenticated API when UW_API_TOKEN is set
-        # (no pagination cap, more reliable). Fall back to the public-page
-        # scraper when no token is configured.
+        # Unusual Whales: ALWAYS run the free public-page scrape as the primary
+        # source — it needs no API token and gives current data. If a UW_API_TOKEN
+        # happens to be set, pull the API feed too as a bonus supplement (dedup
+        # merges the overlap). This means removing the token loses no coverage.
         import os as _os
+        uw_pages = 50 if mode == "backfill" else 15
+        uw_trades = loop.run_until_complete(scrape_unusual_whales(max_pages=uw_pages))
+        logger.info(f"Unusual Whales (free page scrape): {len(uw_trades)} trades")
         if _os.environ.get("UW_API_TOKEN", "").strip():
-            from src.scrapers.uw_api import scrape_uw_api
-            uw_max = 40 if mode == "backfill" else 20
-            uw_trades = loop.run_until_complete(scrape_uw_api(max_pages=uw_max))
-            logger.info(f"Unusual Whales API: {len(uw_trades)} trades scraped")
-        else:
-            uw_pages = 50 if mode == "backfill" else 15
-            uw_trades = loop.run_until_complete(scrape_unusual_whales(max_pages=uw_pages))
-            logger.info(f"Unusual Whales (page scrape): {len(uw_trades)} trades scraped")
+            try:
+                from src.scrapers.uw_api import scrape_uw_api
+                api_trades = loop.run_until_complete(scrape_uw_api(max_pages=20))
+                uw_trades = uw_trades + api_trades
+                logger.info(f"Unusual Whales API (bonus): {len(api_trades)} trades")
+            except Exception as e:
+                logger.warning(f"UW API supplement skipped: {e}")
 
         loop.close()
 
