@@ -1512,6 +1512,31 @@ def ingest_trades_endpoint(payload: dict, db: Session = Depends(get_db)):
     return {"received": len(raw), "new": new}
 
 
+@router.post("/admin/ingest-uw-raw")
+def ingest_uw_raw(payload: dict, db: Session = Depends(get_db)):
+    """Accept RAW Unusual Whales trade_data objects (as scraped from the public
+    /politics page's __NEXT_DATA__) and parse + ingest them server-side.
+
+    This is the off-Railway daily-scrape path: a cloud agent (not Railway's
+    blocked IP) fetches the UW page, extracts the raw trade_data array, and
+    POSTs it here. The fetch happens off-box (unblocked); only parsing +
+    ingest run on Railway. Body: {"raw": [ {uw trade obj}, ... ]}.
+    """
+    from src.scrapers.unusual_whales import _parse_trade
+    from src.services.trade_service import ingest_trades
+
+    raw = payload.get("raw", [])
+    if not isinstance(raw, list) or not raw:
+        return {"error": "body must be {\"raw\": [...]}", "new": 0}
+    parsed = []
+    for tx in raw:
+        p = _parse_trade(tx)
+        if p:
+            parsed.append(p)
+    new = ingest_trades(db, parsed) if parsed else 0
+    return {"received": len(raw), "parsed": len(parsed), "new": new}
+
+
 @router.get("/admin/backfill-one")
 async def backfill_one(name: str, max_pages: int = 200, start_page: int = 1, db: Session = Depends(get_db)):
     """Synchronously deep-scrape ONE politician via Capitol Trades and ingest.
