@@ -181,65 +181,22 @@ def get_or_create_member(db: Session, name: str, chamber: str, **kwargs) -> Memb
                     c.name = canonical
                 break
 
-    # Third: match by (last_name, chamber, state). High confidence — when
-    # state and last name match in the same chamber, it's the same person
-    # regardless of first-name spelling (Jerry/Gerald, Tim/Timothy, Josh/Joshua,
-    # Rick/Richard, Mitch/Addison, etc.).
+    # Third: match via same_person() — the SAME logic the dedupe + audit use.
+    # This is the dupe-prevention net: catches nickname/legal-name/middle-name
+    # variants (Tom/Thomas Udall, Jack/John Reed, Ladda Tammy/Tammy Duckworth,
+    # Tim/Timothy Walberg) so we never CREATE a duplicate row in the first place.
+    # State must be compatible (one side null OR equal) to avoid collapsing two
+    # genuinely different same-last-name members; same_person already keeps
+    # distinct first names (Austin vs David Scott) apart.
     if not member and canonical:
         incoming_state = kwargs.get("state")
-        incoming_tokens = canonical.split()
-        incoming_last = incoming_tokens[-1].lower() if incoming_tokens else None
-        incoming_first = incoming_tokens[0].lower() if incoming_tokens else None
-
-        def _first_compatible(c_name: str) -> bool:
-            """True if the candidate's first name is plausibly the same person.
-            Catches: prefix match (Tim/Timothy), 3-char prefix (Sam/Samuel),
-            and same first letter (Susie/Suzanne, Bobby/Robert).
-
-            We're aggressive here because the outer match already constrained
-            on (last_name, chamber, state). Two reps in the same state with
-            the same last name AND first names starting with the same letter
-            is effectively impossible in current Congress.
-            """
-            c_tokens = c_name.split()
-            if not c_tokens or not incoming_first:
-                return True
-            c_first = c_tokens[0].lower()
-            if c_first == incoming_first:
-                return True
-            if c_first.startswith(incoming_first) or incoming_first.startswith(c_first):
-                return True
-            if len(c_first) >= 3 and len(incoming_first) >= 3 and c_first[:3] == incoming_first[:3]:
-                return True
-            # Same first letter is enough when last name + state + chamber match
-            if c_first[0] == incoming_first[0]:
-                return True
-            return False
-
-        if incoming_last and incoming_state:
-            candidates = (
-                db.query(Member)
-                .filter(Member.chamber == chamber, Member.state == incoming_state)
-                .all()
-            )
-            for c in candidates:
-                c_last = c.name.split()[-1].lower() if c.name.split() else None
-                if c_last == incoming_last and _first_compatible(c.name):
+        for c in db.query(Member).filter(Member.chamber == chamber).all():
+            if same_person(canonical, c.name):
+                if not incoming_state or not c.state or incoming_state == c.state:
                     member = c
-                    break
-        # Fallback: incoming has no state. Match against existing rows that
-        # DO have state set, but only if first names are compatible too —
-        # otherwise we'd collapse unrelated people sharing a last name.
-        elif incoming_last and not incoming_state:
-            candidates = (
-                db.query(Member)
-                .filter(Member.chamber == chamber, Member.state.isnot(None))
-                .all()
-            )
-            for c in candidates:
-                c_last = c.name.split()[-1].lower() if c.name.split() else None
-                if c_last == incoming_last and _first_compatible(c.name):
-                    member = c
+                    # Upgrade to the cleaner/longer canonical name form
+                    if len(canonical) > len(c.name):
+                        c.name = canonical
                     break
 
     if not member:
