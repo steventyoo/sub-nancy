@@ -1,0 +1,30 @@
+name: sub-nancy data sync
+
+# Reliable scheduler — runs on GitHub's infra, independent of Claude
+# sessions / Railway. Fetches from a non-blocked IP, POSTs to Railway,
+# sends the Slack report. Has a visible run history + emails on failure,
+# so a skipped/failed run can never go unnoticed for weeks.
+on:
+  schedule:
+    # Hourly during US active hours: 11:00–23:00 UTC = 7am–7pm ET.
+    # (GitHub cron is UTC. Top-of-hour may be delayed a few min under load,
+    #  but does not silently disable like the Claude triggers did.)
+    - cron: "0 11-23 * * *"
+  workflow_dispatch: {}   # allow manual "Run workflow" from the Actions tab
+
+# Don't pile up overlapping runs if one is slow
+concurrency:
+  group: sub-nancy-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run off-Railway sync
+        run: python scripts/daily_sync.py
