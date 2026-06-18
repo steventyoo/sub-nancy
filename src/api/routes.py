@@ -1375,18 +1375,32 @@ async def slack_daily_summary(db: Session = Depends(get_db)):
         {"type": "section", "fields": summary_fields},
     ]
 
-    # Top 5 gaps if any
-    gaps_list = cross.get("gaps", [])[:5]
-    if gaps_list:
-        gap_lines = []
-        for g in gaps_list:
-            gap_lines.append(
-                f"• *{g['uw_name']}* ({g.get('chamber','?')} {g.get('state') or ''}) — "
-                f"UW: {g['uw_count']} / Ours: {g['our_count']} → missing {g['gap']}"
-            )
+    # Newest politician trades (by filing date) — the headline section
+    recent = (
+        db.query(Trade)
+        .order_by(Trade.filing_date.desc().nullslast(), Trade.transaction_date.desc().nullslast())
+        .limit(8)
+        .all()
+    )
+    if recent:
+        def _amt(t):
+            lo, hi = t.amount_low, t.amount_high
+            if lo and hi:
+                return f"${int(lo/1000)}K-${int(hi/1000)}K"
+            if lo:
+                return f"${int(lo/1000)}K+"
+            return ""
+        lines = []
+        for t in recent:
+            m = db.query(Member).filter(Member.id == t.member_id).first()
+            nm = m.name if m else "?"
+            tk = t.ticker or (t.asset_description[:18] if t.asset_description else "—")
+            td = t.transaction_date.strftime("%m/%d") if t.transaction_date else "?"
+            typ = (t.transaction_type or "")[:4]
+            lines.append(f"• *{nm}* — {tk} {typ} {_amt(t)} ({td})")
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": "*Top Coverage Gaps:*\n" + "\n".join(gap_lines)}
+            "text": {"type": "mrkdwn", "text": "*Newest Politician Trades:*\n" + "\n".join(lines)}
         })
 
     # Name dirtiness details
