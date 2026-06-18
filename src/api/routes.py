@@ -1512,6 +1512,23 @@ def ingest_trades_endpoint(payload: dict, db: Session = Depends(get_db)):
     return {"received": len(raw), "new": new}
 
 
+@router.post("/admin/ingest-ct-html")
+def ingest_ct_html(payload: dict, db: Session = Depends(get_db)):
+    """Accept raw Capitol Trades page HTML (fetched off-Railway) and parse +
+    ingest the trades server-side. Second free off-Railway source for
+    redundancy alongside the UW public page. Body: {"html": "<page html>"}.
+    """
+    from src.scrapers.capitol_trades import extract_trades_from_html
+    from src.services.trade_service import ingest_trades
+
+    html = payload.get("html", "")
+    if not html or not isinstance(html, str):
+        return {"error": "body must be {\"html\": \"...\"}", "new": 0}
+    trades = extract_trades_from_html(html)
+    new = ingest_trades(db, trades) if trades else 0
+    return {"parsed": len(trades), "new": new}
+
+
 @router.post("/admin/ingest-uw-raw")
 def ingest_uw_raw(payload: dict, db: Session = Depends(get_db)):
     """Accept RAW Unusual Whales trade_data objects (as scraped from the public
