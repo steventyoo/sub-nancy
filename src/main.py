@@ -67,7 +67,7 @@ def startup():
     # Only start scheduler for local/persistent server (not Vercel)
     if not IS_VERCEL:
         from apscheduler.schedulers.background import BackgroundScheduler
-        from src.scheduler.jobs import run_email_job, run_scrape_job
+        from src.scheduler.jobs import run_scrape_job
 
         global _scheduler
         _scheduler = BackgroundScheduler()
@@ -88,18 +88,9 @@ def startup():
             id="scrape_job_pm",
             name="Scrape congressional disclosures (PM)",
         )
-        _scheduler.add_job(
-            run_email_job,
-            "cron",
-            hour=settings.email_hour,
-            id="email_job",
-            name="Send daily trade email",
-        )
+        # Email alerts removed — daily Slack report replaces them.
         _scheduler.start()
-        logger.info(
-            "Scheduler started: scraping at 06:00 & 18:00 UTC, "
-            f"emails at {settings.email_hour}:00 UTC"
-        )
+        logger.info("Scheduler started: scraping at 06:00 & 18:00 UTC")
 
         # Run a scrape immediately on startup so data is never stale after a deploy
         import threading
@@ -541,10 +532,7 @@ DASHBOARD_HTML = """
   <div class="nav-tab" onclick="showTab('screener')">Screener</div>
   <div class="nav-tab" onclick="showTab('query')">Query</div>
   <div class="nav-tab" onclick="showTab('browse')">Browse</div>
-  <div class="nav-tab" onclick="showTab('subscribe')">Alerts</div>
   <div class="nav-tab" onclick="showTab('tidal')">Audit</div>
-  <div class="nav-tab" onclick="showTab('anomaly')">Anomaly Feed</div>
-  <div class="nav-tab" onclick="showTab('latefilers')">Late Filers</div>
 </div>
 
 <div class="container">
@@ -742,20 +730,6 @@ DASHBOARD_HTML = """
     </div>
   </div>
 
-  <!-- SUBSCRIBE TAB -->
-  <div id="tab-subscribe" style="display:none">
-    <div class="section-title">Email Notifications</div>
-    <div class="subscribe-card">
-      <h2>Daily Alerts</h2>
-      <p>Get notified every morning when congress members disclose new stock trades.</p>
-      <div class="query-row">
-        <input class="query-input" id="sub-email" placeholder="your@email.com">
-        <button class="btn btn-primary" onclick="subscribe()">Subscribe</button>
-      </div>
-      <div id="sub-result" style="margin-top:14px;font-family:'IBM Plex Mono',monospace;font-size:13px"></div>
-    </div>
-  </div>
-
   <!-- TIDAL TAB -->
   <div id="tab-tidal" style="display:none">
     <div style="display:flex;justify-content:space-between;align-items:center">
@@ -777,37 +751,6 @@ DASHBOARD_HTML = """
     </div>
   </div>
 
-  <!-- ANOMALY FEED TAB -->
-  <div id="tab-anomaly" style="display:none">
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <div class="section-title">Anomaly Feed <span class="count-badge" id="anom-badge" style="display:none"></span></div>
-    </div>
-    <p style="color:var(--gray);font-size:13px;margin:0 0 16px">Congressional trades flagged as unusual by Unusual Whales — the alpha signal. Filter by reason tag.</p>
-    <div class="filters" style="margin-bottom:20px">
-      <select class="filter-select" id="anom-type" onchange="loadAnomalyFeed()">
-        <option value="">All Anomaly Types</option>
-        <option value="committee_conflict">Committee Conflict</option>
-        <option value="first_person_to_trade">First to Trade</option>
-        <option value="unusually_large_trade">Unusually Large</option>
-        <option value="low_marketcap">Low Market Cap</option>
-        <option value="unusual_industry">Unusual Industry</option>
-        <option value="fec_donation_conflict">FEC Donation Conflict</option>
-      </select>
-      <button class="btn btn-primary" onclick="loadAnomalyFeed()" style="font-size:11px;padding:10px 18px">Refresh</button>
-    </div>
-    <div class="results-section" id="anomaly-results">
-      <div class="empty">Loading anomaly feed...</div>
-    </div>
-  </div>
-
-  <!-- LATE FILERS TAB -->
-  <div id="tab-latefilers" style="display:none">
-    <div class="section-title">Late Filers <span class="count-badge" id="late-badge" style="display:none"></span></div>
-    <p style="color:var(--gray);font-size:13px;margin:0 0 16px">Members late on their STOCK Act periodic transaction reports. Late disclosure can mask trade timing — a compliance and insider-signal flag.</p>
-    <div class="results-section" id="latefilers-results">
-      <div class="empty">Loading late filers...</div>
-    </div>
-  </div>
 
 </div>
 
@@ -828,7 +771,7 @@ DASHBOARD_HTML = """
 </div>
 
 <script>
-const TABS = ['dashboard','recent','leaderboard','screener','query','browse','subscribe','tidal','anomaly','latefilers'];
+const TABS = ['dashboard','recent','leaderboard','screener','query','browse','tidal'];
 let _previousTab = 'dashboard';
 function showTab(name) {
   _previousTab = name;
@@ -845,117 +788,6 @@ function showTab(name) {
   if (name === 'leaderboard' && !window._lbLoaded) { loadLeaderboard(); window._lbLoaded = true; }
   if (name === 'screener' && !window._scLoaded) { loadScreener(); window._scLoaded = true; }
   if (name === 'tidal' && !window._tidalLoaded) { runTidalAudit(); window._tidalLoaded = true; }
-  if (name === 'anomaly' && !window._anomLoaded) { loadAnomalyFeed(); window._anomLoaded = true; }
-  if (name === 'latefilers' && !window._lateLoaded) { loadLateFilers(); window._lateLoaded = true; }
-}
-
-const ANOM_TAG_LABELS = {
-  committee_conflict: 'Committee Conflict',
-  first_person_to_trade: 'First to Trade',
-  unusually_large_trade: 'Unusually Large',
-  low_marketcap: 'Low Market Cap',
-  unusual_industry: 'Unusual Industry',
-  fec_donation_conflict: 'FEC Donation Conflict',
-};
-
-function cellTrunc(html, titleText) {
-  // Truncate a cell to its column width with ellipsis; full text on hover.
-  const title = (titleText || '').replace(/"/g, '&quot;');
-  return '<div title="' + title + '" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + html + '</div>';
-}
-
-function anomTagBadges(tags) {
-  if (!tags) return '';
-  const arr = Array.isArray(tags) ? tags : [tags];
-  return arr.map(t => {
-    const label = ANOM_TAG_LABELS[t] || t;
-    return '<span style="background:#fce4ec;color:#c0392b;padding:2px 8px;font-size:10px;font-family:IBM Plex Mono,monospace;font-weight:600;margin-right:4px;border-radius:2px">' + escapeHtml(label) + '</span>';
-  }).join('');
-}
-
-async function loadAnomalyFeed() {
-  const res = document.getElementById('anomaly-results');
-  res.innerHTML = '<div class="loading"><span class="spinner"></span> Loading anomaly feed...</div>';
-  const type = document.getElementById('anom-type').value;
-  try {
-    const resp = await fetch('/api/anomaly-feed?limit=200' + (type ? '&types=' + encodeURIComponent(type) : ''));
-    const data = await resp.json();
-    if (data.premium_required) {
-      document.getElementById('anom-badge').style.display = 'none';
-      res.innerHTML = '<div class="answer" style="border-left-color:#d4a017;background:#fffbea">⭐ ' + escapeHtml(data.message) + '</div>';
-      return;
-    }
-    if (data.error) {
-      res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">' + escapeHtml(data.error) + ' — set UW_API_TOKEN in Railway.</div>';
-      return;
-    }
-    const trades = data.trades || [];
-    const badge = document.getElementById('anom-badge');
-    badge.textContent = trades.length + ' flagged'; badge.style.display = 'inline-block';
-    if (trades.length === 0) {
-      res.innerHTML = '<div class="empty">No unusual trades flagged right now' + (type ? ' for that tag' : '') + '. These are rare events — check back or try a different tag.</div>';
-      return;
-    }
-    let h = '<div style="overflow-x:auto"><table style="table-layout:fixed;width:100%;min-width:760px">';
-    h += '<colgroup><col style="width:18%"><col style="width:8%"><col style="width:9%"><col style="width:15%"><col style="width:11%"><col style="width:39%"></colgroup>';
-    h += '<thead><tr><th>MEMBER</th><th>TICKER</th><th>TYPE</th><th>AMOUNT</th><th>TX DATE</th><th>FLAGS</th></tr></thead><tbody>';
-    for (const t of trades) {
-      const name = t.name || t.reporter || '?';
-      const tags = t.tags || t.unusual_types || t.types;
-      h += '<tr>';
-      h += '<td>' + cellTrunc('<strong>' + escapeHtml(name) + '</strong>', name) + '</td>';
-      h += '<td>' + escapeHtml(t.ticker || '-') + '</td>';
-      h += '<td style="font-size:11px">' + escapeHtml((t.txn_type || '-').slice(0,12)) + '</td>';
-      h += '<td style="font-size:11px;white-space:nowrap">' + escapeHtml(t.amounts || '-') + '</td>';
-      h += '<td style="white-space:nowrap">' + escapeHtml((t.transaction_date||'').slice(0,10)) + '</td>';
-      h += '<td>' + anomTagBadges(tags) + '</td>';
-      h += '</tr>';
-    }
-    h += '</tbody></table></div>';
-    res.innerHTML = h;
-  } catch(e) {
-    res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Error: ' + escapeHtml(e.message) + '</div>';
-  }
-}
-
-async function loadLateFilers() {
-  const res = document.getElementById('latefilers-results');
-  res.innerHTML = '<div class="loading"><span class="spinner"></span> Loading late filers...</div>';
-  try {
-    const resp = await fetch('/api/late-filers?limit=200');
-    const data = await resp.json();
-    if (data.error) {
-      res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">' + escapeHtml(data.error) + ' — set UW_API_TOKEN in Railway.</div>';
-      return;
-    }
-    const late = data.late || [];
-    const badge = document.getElementById('late-badge');
-    badge.textContent = late.length + ' late'; badge.style.display = 'inline-block';
-    if (late.length === 0) {
-      res.innerHTML = '<div class="answer" style="border-left-color:var(--green);background:#f0fff4">✓ No late filers reported right now.</div>';
-      return;
-    }
-    let h = '<div style="overflow-x:auto"><table style="table-layout:fixed;width:100%;min-width:820px">';
-    h += '<colgroup><col style="width:16%"><col style="width:8%"><col style="width:30%"><col style="width:8%"><col style="width:15%"><col style="width:11.5%"><col style="width:11.5%"></colgroup>';
-    h += '<thead><tr><th>MEMBER</th><th>TICKER</th><th>ASSET</th><th>TYPE</th><th>AMOUNT</th><th>TX DATE</th><th>FILED</th></tr></thead><tbody>';
-    for (const t of late) {
-      const name = t.name || t.reporter || '?';
-      const asset = t.issuer || t.notes || '';
-      h += '<tr>';
-      h += '<td>' + cellTrunc('<strong>' + escapeHtml(name) + '</strong>', name) + '</td>';
-      h += '<td>' + escapeHtml(t.ticker || '-') + '</td>';
-      h += '<td>' + cellTrunc(escapeHtml(asset || '-'), asset) + '</td>';
-      h += '<td style="font-size:11px">' + escapeHtml((t.txn_type || '-').slice(0,12)) + '</td>';
-      h += '<td style="font-size:11px;white-space:nowrap">' + escapeHtml(t.amounts || '-') + '</td>';
-      h += '<td style="white-space:nowrap">' + escapeHtml((t.transaction_date||'').slice(0,10)) + '</td>';
-      h += '<td style="white-space:nowrap">' + escapeHtml((t.filed_at_date||'').slice(0,10)) + '</td>';
-      h += '</tr>';
-    }
-    h += '</tbody></table></div>';
-    res.innerHTML = h;
-  } catch(e) {
-    res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Error: ' + escapeHtml(e.message) + '</div>';
-  }
 }
 
 async function runTidalAudit() {
@@ -1196,22 +1028,6 @@ async function browseTrades() {
     }
   } catch(e) {
     res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Error: ' + e.message + '</div>';
-  }
-}
-
-async function subscribe() {
-  const email = document.getElementById('sub-email').value.trim();
-  if (!email) return;
-  try {
-    const resp = await fetch('/api/subscribe', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({email: email})
-    });
-    const data = await resp.json();
-    document.getElementById('sub-result').innerHTML = '<span style="color:var(--green)">&#10003; ' + data.message + '</span>';
-  } catch(e) {
-    document.getElementById('sub-result').innerHTML = '<span style="color:var(--red)">Failed: ' + e.message + '</span>';
   }
 }
 
