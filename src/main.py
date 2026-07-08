@@ -302,17 +302,21 @@ DASHBOARD_HTML = """
     letter-spacing: 1px;
   }
   .trades-table td {
-    padding: 5px 12px;
+    padding: 5px 8px;
     border-bottom: 1px solid var(--border);
     font-family: 'IBM Plex Mono', monospace;
     font-size: 12px;
     white-space: nowrap;
     line-height: 1.35;
   }
-  .trades-table th { padding: 7px 12px; }
+  .trades-table th { padding: 7px 8px; white-space: nowrap; }
   .trades-table td.asset {
-    white-space: nowrap;
-    max-width: 260px;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .trades-table td.sector {
+    max-width: 110px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
@@ -1094,7 +1098,7 @@ function partyBadge(party) {
 
 function renderTradeTable(trades) {
   let h = '<div style="overflow-x:auto"><table class="trades-table"><thead><tr>';
-  h += '<th>Member</th><th>Type</th><th>Ticker</th><th>Asset</th><th>Amount</th><th>Owner</th><th>Trade Date</th><th>Filed</th><th>Sector</th>';
+  h += '<th>Member</th><th>Type</th><th>Ticker</th><th>Asset</th><th>Amount</th><th>Owner</th><th>Traded</th><th>Filed</th><th>Sector</th>';
   h += '</tr></thead><tbody>';
   trades.forEach(t => {
     const type = t.transaction_type || '';
@@ -1111,7 +1115,7 @@ function renderTradeTable(trades) {
     h += '<td>' + escapeHtml(t.owner || '') + '</td>';
     h += '<td>' + txDate + '</td>';
     h += '<td style="color:var(--gray-light)">' + fileDate + '</td>';
-    h += '<td class="asset" title="' + escapeHtml(t.sector || '') + '">' + escapeHtml(t.sector || '') + '</td>';
+    h += '<td class="sector" title="' + escapeHtml(t.sector || '') + '">' + escapeHtml(t.sector || '') + '</td>';
     h += '</tr>';
   });
   h += '</tbody></table></div>';
