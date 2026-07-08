@@ -866,28 +866,53 @@ async function loadDropdowns() {
   } catch(e) { console.error('Failed to load filters:', e); }
 }
 
+const RECENT_PAGE = 50;
+window._recentOffset = 0;
+window._recentAll = [];
+
 async function loadRecent() {
+  window._recentOffset = 0;
+  window._recentAll = [];
+  const res = document.getElementById('recent-results');
+  res.innerHTML = '<div class="loading"><span class="spinner"></span> Loading...</div>';
   try {
-    const [tradesResp, statsResp] = await Promise.all([
-      fetch('/api/trades/recent?limit=50'),
-      fetch('/api/stats')
-    ]);
-    const trades = await tradesResp.json();
-    const stats = await statsResp.json();
-    const res = document.getElementById('recent-results');
-    const badge = document.getElementById('stats-badge');
+    const stats = await (await fetch('/api/stats')).json();
     if (stats.total_trades) {
+      const badge = document.getElementById('stats-badge');
       badge.textContent = stats.total_trades.toLocaleString() + ' Trades tracked';
       badge.style.display = 'inline-block';
       document.getElementById('footer-count').textContent = stats.total_trades.toLocaleString() + ' Trades';
     }
-    if (trades.length === 0) {
-      res.innerHTML = '<div class="empty">No trades found yet — trigger a scrape to load data</div>';
-    } else {
-      res.innerHTML = renderTradeTable(trades);
-    }
+    await loadMoreRecent(true);
   } catch(e) {
-    document.getElementById('recent-results').innerHTML = '<div class="answer" style="border-left-color:var(--red)">Failed to load: ' + e.message + '</div>';
+    res.innerHTML = '<div class="answer" style="border-left-color:var(--red)">Failed to load: ' + e.message + '</div>';
+  }
+}
+
+async function loadMoreRecent(reset) {
+  const res = document.getElementById('recent-results');
+  const btn = document.getElementById('recent-more-btn');
+  if (btn) { btn.textContent = 'Loading...'; btn.disabled = true; }
+  try {
+    const resp = await fetch('/api/trades/recent?limit=' + RECENT_PAGE + '&offset=' + window._recentOffset);
+    const batch = await resp.json();
+    window._recentAll = window._recentAll.concat(batch);
+    window._recentOffset += batch.length;
+    if (window._recentAll.length === 0) {
+      res.innerHTML = '<div class="empty">No trades found yet</div>';
+      return;
+    }
+    // render full accumulated list + a Load More button if the last batch was full
+    let html = '<div style="margin-bottom:12px"><span class="count-badge">Showing ' + window._recentAll.length + '</span></div>';
+    html += renderTradeTable(window._recentAll);
+    if (batch.length === RECENT_PAGE) {
+      html += '<div style="text-align:center;margin:20px 0"><button class="btn btn-primary" id="recent-more-btn" onclick="loadMoreRecent(false)" style="padding:12px 28px">Load 50 More</button></div>';
+    } else {
+      html += '<div style="text-align:center;margin:20px 0;color:var(--gray);font-size:12px;font-family:IBM Plex Mono,monospace">— end of results —</div>';
+    }
+    res.innerHTML = html;
+  } catch(e) {
+    if (btn) { btn.textContent = 'Load 50 More'; btn.disabled = false; }
   }
 }
 

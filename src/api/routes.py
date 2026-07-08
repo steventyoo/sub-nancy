@@ -168,9 +168,10 @@ def recent_trades(
     min_amount: float | None = None,
     max_amount: float | None = None,
     limit: int = 50,
+    offset: int = 0,
     db: Session = Depends(get_db),
 ):
-    """Get the most recent trades by transaction date with optional filters."""
+    """Get the most recent trades by filing date with optional filters + paging."""
     query = db.query(Trade).join(Member)
     if member:
         # Token-AND substring match so "Tim Walberg" finds "Timothy Walberg"
@@ -199,6 +200,7 @@ def recent_trades(
         # trade filed today may have a transaction date a month ago; sorting by
         # transaction_date hid the freshest disclosures.
         .order_by(Trade.filing_date.desc().nullslast(), Trade.transaction_date.desc().nullslast())
+        .offset(offset)
         .limit(limit)
         .all()
     )
@@ -774,6 +776,14 @@ def send_trade_alert(since_days: int = 2, db: Session = Depends(get_db)):
     """Email the team the newest congressional filings (last `since_days` by
     filing date). This is the alert Dan asked for — goes to Steve + Dan + Michael.
     """
+    import traceback
+    try:
+        return _send_trade_alert_impl(since_days, db)
+    except Exception as e:
+        return {"error": str(e), "trace": traceback.format_exc()[-800:], "sent": False}
+
+
+def _send_trade_alert_impl(since_days: int, db: Session):
     import os
     import resend
     from datetime import timedelta
