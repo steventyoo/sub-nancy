@@ -302,10 +302,19 @@ DASHBOARD_HTML = """
     letter-spacing: 1px;
   }
   .trades-table td {
-    padding: 11px 14px;
+    padding: 5px 12px;
     border-bottom: 1px solid var(--border);
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 13px;
+    font-size: 12px;
+    white-space: nowrap;
+    line-height: 1.35;
+  }
+  .trades-table th { padding: 7px 12px; }
+  .trades-table td.asset {
+    white-space: nowrap;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .trades-table tr:hover td { background: var(--cream-light); }
   .badge {
@@ -866,7 +875,7 @@ async function loadDropdowns() {
   } catch(e) { console.error('Failed to load filters:', e); }
 }
 
-const RECENT_PAGE = 50;
+const RECENT_PAGE = 200;
 window._recentOffset = 0;
 window._recentAll = [];
 
@@ -906,7 +915,7 @@ async function loadMoreRecent(reset) {
     let html = '<div style="margin-bottom:12px"><span class="count-badge">Showing ' + window._recentAll.length + '</span></div>';
     html += renderTradeTable(window._recentAll);
     if (batch.length === RECENT_PAGE) {
-      html += '<div style="text-align:center;margin:20px 0"><button class="btn btn-primary" id="recent-more-btn" onclick="loadMoreRecent(false)" style="padding:12px 28px">Load 50 More</button></div>';
+      html += '<div style="text-align:center;margin:20px 0"><button class="btn btn-primary" id="recent-more-btn" onclick="loadMoreRecent(false)" style="padding:12px 28px">Load 200 More</button></div>';
     } else {
       html += '<div style="text-align:center;margin:20px 0;color:var(--gray);font-size:12px;font-family:IBM Plex Mono,monospace">— end of results —</div>';
     }
@@ -1097,12 +1106,12 @@ function renderTradeTable(trades) {
     h += '<td><strong class="member-link" onclick="showProfile(\\'' + escapeHtml(t.member_name) + '\\')">' + escapeHtml(t.member_name) + '</strong>' + partyBadge(t.party) + '</td>';
     h += '<td><span class="badge ' + badge + '">' + escapeHtml(type) + '</span></td>';
     h += '<td><strong>' + escapeHtml(t.ticker || 'N/A') + '</strong></td>';
-    h += '<td>' + escapeHtml((t.asset_description || '').substring(0, 40)) + '</td>';
+    h += '<td class="asset" title="' + escapeHtml(t.asset_description || '') + '">' + escapeHtml(t.asset_description || '') + '</td>';
     h += '<td>' + amt + '</td>';
     h += '<td>' + escapeHtml(t.owner || '') + '</td>';
     h += '<td>' + txDate + '</td>';
-    h += '<td style="color:var(--gray-light);font-size:11px">' + fileDate + '</td>';
-    h += '<td>' + escapeHtml(t.sector || '') + '</td>';
+    h += '<td style="color:var(--gray-light)">' + fileDate + '</td>';
+    h += '<td class="asset" title="' + escapeHtml(t.sector || '') + '">' + escapeHtml(t.sector || '') + '</td>';
     h += '</tr>';
   });
   h += '</tbody></table></div>';
