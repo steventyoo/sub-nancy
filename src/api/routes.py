@@ -194,7 +194,11 @@ def recent_trades(
         query = query.filter(Trade.amount_low <= max_amount)
     trades = (
         query
-        .order_by(Trade.transaction_date.desc().nullslast())
+        # Sort by FILING date (newest disclosures first) — this is what "recent"
+        # means for a trade tracker. Congress files weeks after trading, so a
+        # trade filed today may have a transaction date a month ago; sorting by
+        # transaction_date hid the freshest disclosures.
+        .order_by(Trade.filing_date.desc().nullslast(), Trade.transaction_date.desc().nullslast())
         .limit(limit)
         .all()
     )

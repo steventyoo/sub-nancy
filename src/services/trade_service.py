@@ -436,4 +436,8 @@ def search_trades(
     if date_to:
         query = query.filter(Trade.transaction_date <= date_to)
 
-    return query.order_by(Trade.transaction_date.desc()).offset(offset).limit(limit).all()
+    # Newest disclosures first (filing date), then transaction date as tiebreak.
+    return (
+        query.order_by(Trade.filing_date.desc().nullslast(), Trade.transaction_date.desc().nullslast())
+        .offset(offset).limit(limit).all()
+    )
