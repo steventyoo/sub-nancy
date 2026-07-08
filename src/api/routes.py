@@ -790,13 +790,19 @@ def send_trade_alert(since_days: int = 2, db: Session = Depends(get_db)):
 
 def _send_trade_alert_impl(since_days: int, db: Session):
     import os
-    import resend
     from datetime import timedelta
 
-    api_key = os.environ.get("RESEND_API_KEY", "")
-    if not api_key:
-        return {"error": "RESEND_API_KEY not set", "sent": False}
-    resend.api_key = api_key
+    # Delivery method: Gmail SMTP if GMAIL_APP_PASSWORD is set (sends from a
+    # gmail to anyone, no domain verification), else Resend.
+    gmail_pw = os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
+    gmail_user = os.environ.get("GMAIL_USER", "steventyoo@gmail.com").strip()
+    use_gmail = bool(gmail_pw)
+    if not use_gmail:
+        import resend
+        api_key = os.environ.get("RESEND_API_KEY", "")
+        if not api_key:
+            return {"error": "Neither GMAIL_APP_PASSWORD nor RESEND_API_KEY set", "sent": False}
+        resend.api_key = api_key
 
     cutoff = datetime.utcnow() - timedelta(days=since_days)
     trades = (
@@ -847,17 +853,36 @@ def _send_trade_alert_impl(since_days: int, db: Session):
         f"<a href='https://sub-nancy-production.up.railway.app/'>Subversive dashboard</a></p></div>"
     )
 
+    subject = f"Subversive: {len(trades)} new congressional filings (through {nf})"
+
+    if use_gmail:
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = gmail_user
+        msg["To"] = ", ".join(ALERT_RECIPIENTS)
+        msg.attach(MIMEText(html, "html"))
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
+                server.login(gmail_user, gmail_pw)
+                server.sendmail(gmail_user, ALERT_RECIPIENTS, msg.as_string())
+        except Exception as e:
+            return {"error": f"gmail send failed: {e}", "sent": False}
+        return {"sent": True, "via": "gmail", "count": len(trades), "newest_filing": nf, "to": ALERT_RECIPIENTS}
+
     from_addr = os.environ.get("EMAIL_FROM", "alerts@subversivecapital.com")
     try:
         resend.Emails.send({
             "from": from_addr,
             "to": ALERT_RECIPIENTS,
-            "subject": f"Subversive: {len(trades)} new congressional filings (through {nf})",
+            "subject": subject,
             "html": html,
         })
     except Exception as e:
         return {"error": f"send failed: {e}", "sent": False}
-    return {"sent": True, "count": len(trades), "newest_filing": nf, "to": ALERT_RECIPIENTS}
+    return {"sent": True, "via": "resend", "count": len(trades), "newest_filing": nf, "to": ALERT_RECIPIENTS}
 
 
 def _run_committee_scrape():
