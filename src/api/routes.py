@@ -763,11 +763,10 @@ def trigger_emails(db: Session = Depends(get_db)):
     return {"message": "Email job completed"}
 
 
-# Direct trade alert to the Subversive/Tidal team (Dan's request).
+# Direct trade alert recipients — Steve + Dan only.
 ALERT_RECIPIENTS = [
     "steven@subversivecapital.com",
     "dweiskopf@tidalfg.com",
-    "michael@subversivecapital.com",
 ]
 
 
