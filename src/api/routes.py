@@ -763,10 +763,16 @@ def trigger_emails(db: Session = Depends(get_db)):
     return {"message": "Email job completed"}
 
 
-# Direct trade alert recipients — Steve + Dan only.
+# Direct trade alert recipients. NOTE: Resend only delivers to the account
+# owner (steventyoo@gmail.com) until a sending domain is verified. Once
+# subversivecapital.com is verified in Resend, swap these to
+# steven@subversivecapital.com + dweiskopf@tidalfg.com and set EMAIL_FROM to
+# an address on the verified domain.
+import os as _os_alert
 ALERT_RECIPIENTS = [
-    "steven@subversivecapital.com",
-    "dweiskopf@tidalfg.com",
+    e.strip() for e in _os_alert.environ.get(
+        "ALERT_RECIPIENTS", "steventyoo@gmail.com"
+    ).split(",") if e.strip()
 ]
 
 
