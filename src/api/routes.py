@@ -787,7 +787,7 @@ def _send_trade_alert_impl(since_days: int, db: Session):
     import resend
     from datetime import timedelta
 
-    api_key = settings.resend_api_key or os.environ.get("RESEND_API_KEY", "")
+    api_key = os.environ.get("RESEND_API_KEY", "")
     if not api_key:
         return {"error": "RESEND_API_KEY not set", "sent": False}
     resend.api_key = api_key
