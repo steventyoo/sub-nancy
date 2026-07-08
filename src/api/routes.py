@@ -761,6 +761,90 @@ def trigger_emails(db: Session = Depends(get_db)):
     return {"message": "Email job completed"}
 
 
+# Direct trade alert to the Subversive/Tidal team (Dan's request).
+ALERT_RECIPIENTS = [
+    "steven@subversivecapital.com",
+    "dweiskopf@tidalfg.com",
+    "michael@subversivecapital.com",
+]
+
+
+@router.post("/admin/send-trade-alert")
+def send_trade_alert(since_days: int = 2, db: Session = Depends(get_db)):
+    """Email the team the newest congressional filings (last `since_days` by
+    filing date). This is the alert Dan asked for — goes to Steve + Dan + Michael.
+    """
+    import os
+    import resend
+    from datetime import timedelta
+
+    api_key = settings.resend_api_key or os.environ.get("RESEND_API_KEY", "")
+    if not api_key:
+        return {"error": "RESEND_API_KEY not set", "sent": False}
+    resend.api_key = api_key
+
+    cutoff = datetime.utcnow() - timedelta(days=since_days)
+    trades = (
+        db.query(Trade).join(Member)
+        .filter(Trade.filing_date >= cutoff)
+        .order_by(Trade.filing_date.desc().nullslast(), Trade.transaction_date.desc().nullslast())
+        .limit(80)
+        .all()
+    )
+    if not trades:
+        return {"sent": False, "reason": "no new filings in window", "count": 0}
+
+    def _amt(t):
+        if t.amount_low and t.amount_high:
+            return f"${int(t.amount_low):,}–${int(t.amount_high):,}"
+        if t.amount_low:
+            return f"${int(t.amount_low):,}+"
+        return "—"
+
+    rows = ""
+    for t in trades:
+        m = db.query(Member).filter(Member.id == t.member_id).first()
+        color = "#16a34a" if "Purchase" in (t.transaction_type or "") else "#dc2626"
+        rows += (
+            "<tr style='border-bottom:1px solid #eee'>"
+            f"<td style='padding:6px 10px;font-weight:600'>{m.name if m else '?'}</td>"
+            f"<td style='padding:6px 10px'>{t.ticker or (t.asset_description or '')[:24]}</td>"
+            f"<td style='padding:6px 10px;color:{color};font-weight:600'>{t.transaction_type or ''}</td>"
+            f"<td style='padding:6px 10px'>{_amt(t)}</td>"
+            f"<td style='padding:6px 10px'>{t.transaction_date.strftime('%m/%d') if t.transaction_date else '?'}</td>"
+            f"<td style='padding:6px 10px;color:#666'>{t.filing_date.strftime('%m/%d') if t.filing_date else '?'}</td>"
+            "</tr>"
+        )
+
+    newest_filing = max((t.filing_date for t in trades if t.filing_date), default=None)
+    nf = newest_filing.strftime("%b %d, %Y") if newest_filing else "?"
+    html = (
+        f"<div style='font-family:system-ui,sans-serif;max-width:720px'>"
+        f"<h2 style='margin:0 0 4px'>Subversive — New Congressional Filings</h2>"
+        f"<p style='color:#666;margin:0 0 16px'>{len(trades)} disclosures filed in the last {since_days} days · newest filing {nf}</p>"
+        f"<table style='border-collapse:collapse;width:100%;font-size:14px'>"
+        f"<thead><tr style='text-align:left;border-bottom:2px solid #111'>"
+        f"<th style='padding:6px 10px'>Member</th><th style='padding:6px 10px'>Ticker</th>"
+        f"<th style='padding:6px 10px'>Type</th><th style='padding:6px 10px'>Amount</th>"
+        f"<th style='padding:6px 10px'>Traded</th><th style='padding:6px 10px'>Filed</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+        f"<p style='color:#999;font-size:12px;margin-top:16px'>Live view: "
+        f"<a href='https://sub-nancy-production.up.railway.app/'>Subversive dashboard</a></p></div>"
+    )
+
+    from_addr = os.environ.get("EMAIL_FROM", "alerts@subversivecapital.com")
+    try:
+        resend.Emails.send({
+            "from": from_addr,
+            "to": ALERT_RECIPIENTS,
+            "subject": f"Subversive: {len(trades)} new congressional filings (through {nf})",
+            "html": html,
+        })
+    except Exception as e:
+        return {"error": f"send failed: {e}", "sent": False}
+    return {"sent": True, "count": len(trades), "newest_filing": nf, "to": ALERT_RECIPIENTS}
+
+
 def _run_committee_scrape():
     """Scrape committee rosters and ingest into DB."""
     import asyncio
