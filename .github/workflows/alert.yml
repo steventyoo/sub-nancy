@@ -1,11 +1,11 @@
 name: sub-nancy daily trade alert
 
-# Emails the team (Steve, Dan, Michael) the newest congressional filings
-# once each morning. Separate from the hourly data sync so it's exactly
-# one digest per day, not one per sync.
+# Emails the team the newest congressional filings each morning.
+# Runs on GitHub Actions (NOT Railway) because Railway blocks outbound SMTP
+# ports — GitHub runners can reach Gmail's mail server.
 on:
   schedule:
-    - cron: "0 12 * * 1-5"   # 12:00 UTC = 8am ET, weekdays (filings post on weekdays)
+    - cron: "0 12 * * 1-5"   # 12:00 UTC = 8am ET, weekdays
   workflow_dispatch: {}
 
 jobs:
@@ -13,7 +13,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Send trade alert email
-        run: |
-          curl -s -X POST "https://sub-nancy-production.up.railway.app/api/admin/send-trade-alert?since_days=2" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print(d); sys.exit(0 if d.get('sent') or d.get('reason') else 1)"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Send trade alert via Gmail
+        env:
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GMAIL_USER: ${{ vars.GMAIL_USER }}
+          ALERT_RECIPIENTS: ${{ vars.ALERT_RECIPIENTS }}
+        run: python scripts/send_alert.py
