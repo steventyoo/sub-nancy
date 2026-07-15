@@ -6,10 +6,10 @@ name: sub-nancy data sync
 # so a skipped/failed run can never go unnoticed for weeks.
 on:
   schedule:
-    # Hourly during US active hours: 11:00–23:00 UTC = 7am–7pm ET.
-    # (GitHub cron is UTC. Top-of-hour may be delayed a few min under load,
-    #  but does not silently disable like the Claude triggers did.)
-    - cron: "0 11-23 * * *"
+    # Every 3 hours (UTC) — ~5 runs/day to stay well under the free Actions
+    # minute cap. Covers the US active window (11:00-23:00 ET-ish) plus
+    # overnight. Reduced from hourly after hitting a GitHub billing limit.
+    - cron: "0 11,14,17,20,23 * * *"
   workflow_dispatch: {}   # allow manual "Run workflow" from the Actions tab
 
 # Don't pile up overlapping runs if one is slow
