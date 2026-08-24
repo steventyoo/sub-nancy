@@ -66,8 +66,12 @@ def main():
         if not td:
             break
         raw.extend(td)
-    for i in range(0, len(raw), 400):
-        new += post("/api/admin/ingest-uw-raw", {"raw": raw[i:i + 400]}).get("new", 0)
+    # Small batches: per-trade commits + sector enrichment make a 400-trade
+    # ingest slow enough to hit Railway's gateway timeout (502), which loses
+    # the returned `new` count even though rows persist. 75/batch finishes
+    # well inside the timeout, keeping `new` accurate for the watchdog.
+    for i in range(0, len(raw), 75):
+        new += post("/api/admin/ingest-uw-raw", {"raw": raw[i:i + 75]}).get("new", 0)
     print(f"UW: fetched {len(raw)} raw trades")
 
     # Source 2: Capitol Trades (redundancy)
