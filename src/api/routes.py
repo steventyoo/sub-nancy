@@ -1654,6 +1654,22 @@ def ingest_trades_endpoint(payload: dict, db: Session = Depends(get_db)):
     return {"received": len(raw), "new": new}
 
 
+@router.post("/admin/delete-by-ticker")
+def delete_by_ticker(payload: dict, db: Session = Depends(get_db)):
+    """Delete trades by exact ticker — used to clean up test rows.
+    Body: {"ticker": "ZZZT"}.
+    """
+    ticker = (payload.get("ticker") or "").strip()
+    if not ticker:
+        return {"error": "body must be {\"ticker\": \"...\"}", "deleted": 0}
+    rows = db.query(Trade).filter(Trade.ticker == ticker).all()
+    n = len(rows)
+    for r in rows:
+        db.delete(r)
+    db.commit()
+    return {"ticker": ticker, "deleted": n}
+
+
 @router.post("/admin/ingest-ct-html")
 def ingest_ct_html(payload: dict, db: Session = Depends(get_db)):
     """Accept raw Capitol Trades page HTML (fetched off-Railway) and parse +
