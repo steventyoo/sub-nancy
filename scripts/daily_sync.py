@@ -42,6 +42,14 @@ def post(path, obj, timeout=150):
 def main():
     new = 0
 
+    # Snapshot the row count before ingest so the watchdog can tell
+    # "reported new but nothing persisted" (a real bug) apart from
+    # "nothing newer to fetch" (normal on weekends / recess).
+    try:
+        total_before = json.load(urllib.request.urlopen(B + "/api/health", timeout=30)).get("total_trades") or 0
+    except Exception:
+        total_before = None
+
     # Source 1: Unusual Whales public page
     raw = []
     for p in range(1, 13):
@@ -76,6 +84,13 @@ def main():
     print(f"Capitol Trades: fetched {ct_pages} pages")
     print(f"TOTAL NEW INGESTED: {new}")
 
+    # Snapshot again right after ingest, BEFORE dedupe can remove rows —
+    # so the persistence check compares like-for-like.
+    try:
+        total_after_ingest = json.load(urllib.request.urlopen(B + "/api/health", timeout=30)).get("total_trades") or 0
+    except Exception:
+        total_after_ingest = None
+
     # Cleanup: dedupe + normalize names
     post("/api/admin/dedupe-smart", {})
     post("/api/admin/normalize-member-names", {})
@@ -84,16 +99,42 @@ def main():
     slack = post("/api/admin/slack-daily-summary", {})
     print(f"Slack sent: {slack.get('sent')}")
 
-    # Watchdog: fail the run (red X + email) if data is stale
+    # Watchdog: fail the run (red X + failure email) only on a REAL pipeline
+    # breakage — not merely because Congress filed nothing newer (normal on
+    # weekends and during recess). Three precise signals, any of which is a
+    # genuine fault:
     health = json.load(urllib.request.urlopen(B + "/api/health", timeout=30))
     lf = (health.get("latest_filing_date") or "")[:10]
     total = health.get("total_trades")
-    print(f"latest_filing={lf} total={total}")
-    if lf:
+    print(f"latest_filing={lf} total={total} raw_fetched={len(raw)} new={new} "
+          f"total_before={total_before} total_after_ingest={total_after_ingest}")
+
+    fail = None
+
+    # 1. Source/parse breakage: the primary source yielded zero rows. If UW
+    #    changes its page and our parser silently returns nothing, `new` stays
+    #    0 forever and the data quietly freezes — this catches that directly.
+    if len(raw) == 0:
+        fail = f"SOURCE EMPTY — Unusual Whales returned 0 parsable trades (parser or page likely changed)"
+
+    # 2. Persistence breakage (the bug fixed 2026-08-24): ingest reported new
+    #    trades but the row count didn't move. Never fires on a quiet day
+    #    because `new` is 0 then.
+    elif new > 0 and total_before is not None and total_after_ingest is not None \
+            and total_after_ingest <= total_before:
+        fail = f"NOT PERSISTING — reported {new} new but total stayed {total_before} (ingest rollback bug?)"
+
+    # 3. Long-horizon backstop: even if the above pass, a >7-day-old newest
+    #    filing means something is wrong that the targeted checks missed.
+    #    7 days (was 3) tolerates weekends + short recesses without false alarms.
+    elif lf:
         days_behind = (datetime.now(timezone.utc).date() - datetime.strptime(lf, "%Y-%m-%d").date()).days
-        if days_behind > 3:
-            print(f"::error::DATA STALE — latest filing {lf} is {days_behind} days behind")
-            sys.exit(1)
+        if days_behind > 7:
+            fail = f"DATA STALE — latest filing {lf} is {days_behind} days behind"
+
+    if fail:
+        print(f"::error::{fail}")
+        sys.exit(1)
     print("sync OK")
 
 
