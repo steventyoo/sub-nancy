@@ -311,7 +311,6 @@ def ingest_trades(db: Session, raw_trades: list[dict]) -> int:
     Returns the count of new trades inserted.
     """
     new_count = 0
-    batch_size = 500
 
     for i, raw in enumerate(raw_trades):
         try:
@@ -358,19 +357,21 @@ def ingest_trades(db: Session, raw_trades: list[dict]) -> int:
                 raw_filing_url=raw.get("raw_filing_url"),
             )
             db.add(trade)
+            # Commit each trade individually. A batch-wide commit meant one
+            # bad trade's rollback wiped every uncommitted trade in the batch
+            # (why the newest filings silently never persisted). Per-trade
+            # commit isolates failures to the single offending row.
+            db.commit()
             new_count += 1
 
-            # Commit in batches to keep session clean
-            if new_count % batch_size == 0:
-                db.commit()
-                logger.info(f"Batch commit: {new_count} new trades so far (processed {i + 1}/{len(raw_trades)})")
+            if new_count % 500 == 0:
+                logger.info(f"{new_count} new trades committed so far (processed {i + 1}/{len(raw_trades)})")
 
         except Exception as e:
             logger.warning(f"Skipping trade {i}: {e}")
             db.rollback()
             continue
 
-    db.commit()
     logger.info(f"Ingested {new_count} new trades (out of {len(raw_trades)} scraped)")
     return new_count
 
