@@ -95,8 +95,11 @@ def main():
     except Exception:
         total_after_ingest = None
 
-    # Cleanup: dedupe + normalize names
+    # Cleanup: dedupe members, collapse cross-source duplicate trade rows,
+    # normalize names
     post("/api/admin/dedupe-smart", {})
+    dt = post("/api/admin/dedupe-trades", {})
+    print(f"Duplicate trade rows removed: {dt.get('duplicate_trade_rows_deleted', 0)}")
     post("/api/admin/normalize-member-names", {})
 
     # Slack daily report

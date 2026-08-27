@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
 from src.db.models import Member, Sector, Trade
@@ -289,9 +289,16 @@ def trade_exists(db: Session, member_id: int, trade_data: dict) -> bool:
     if trade_data.get("amount_low") is not None:
         filters.append(Trade.amount_low == trade_data["amount_low"])
 
-    # Include filing_date to distinguish separate filings on the same day
-    if trade_data.get("filing_date"):
-        filters.append(Trade.filing_date == trade_data["filing_date"])
+    # Match filing_date by CALENDAR DATE, not exact timestamp. Different
+    # sources stamp the same filing with different times of day (Unusual
+    # Whales uses the scrape time, Capitol Trades uses midnight), so an
+    # exact-timestamp compare treated one real trade as two. The trade date
+    # + amount + owner + ticker already pin the identity; the filing day
+    # only needs to agree to the day.
+    fd = trade_data.get("filing_date")
+    if fd:
+        fd_day = fd.date() if hasattr(fd, "date") else fd
+        filters.append(func.date(Trade.filing_date) == fd_day)
 
     # Include owner to distinguish self vs spouse vs child trades
     if trade_data.get("owner"):

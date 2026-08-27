@@ -1816,6 +1816,55 @@ def dedupe_smart(db: Session = Depends(get_db)):
     }
 
 
+@router.post("/admin/dedupe-trades")
+def dedupe_trades(db: Session = Depends(get_db)):
+    """Collapse duplicate TRADE rows created when the same real filing is
+    captured from two sources (e.g. Unusual Whales + Capitol Trades), which
+    format the description differently and stamp a different time-of-day on
+    the filing date.
+
+    Two rows are the same trade only when EVERY identifying field matches:
+    member, ticker, exact trade date, buy/sell, both amount bounds, owner,
+    and the filing CALENDAR DATE. That tuple physically pins one disclosed
+    transaction — a member does not file two identical-ticker, same-date,
+    same-amount, same-owner purchases as separate line items — so merging on
+    it cannot collapse two genuinely distinct trades. Rows WITHOUT a ticker
+    (options/complex assets whose only identifier is free-text description,
+    which differs by source) are left untouched to stay on the safe side.
+
+    Keeps the row with the most informative description; deletes the rest.
+    """
+    rows = db.query(Trade).filter(Trade.ticker.isnot(None), Trade.ticker != "").all()
+    groups: dict[tuple, list] = {}
+    for t in rows:
+        fd = t.filing_date.date().isoformat() if t.filing_date else None
+        td = t.transaction_date.date().isoformat() if t.transaction_date else None
+        key = (t.member_id, t.ticker, td, t.transaction_type,
+               t.amount_low, t.amount_high, t.owner, fd)
+        groups.setdefault(key, []).append(t)
+
+    deleted = 0
+    examples = []
+    for key, g in groups.items():
+        if len(g) < 2:
+            continue
+        # Keep the most descriptive row (longest asset_description), then lowest id
+        g.sort(key=lambda t: (len(t.asset_description or ""), -t.id), reverse=True)
+        keeper = g[0]
+        for d in g[1:]:
+            if len(examples) < 40:
+                examples.append({
+                    "kept_id": keeper.id, "deleted_id": d.id,
+                    "ticker": keeper.ticker, "member_id": keeper.member_id,
+                    "amount": [keeper.amount_low, keeper.amount_high],
+                })
+            db.delete(d)
+            deleted += 1
+
+    db.commit()
+    return {"duplicate_trade_rows_deleted": deleted, "examples": examples}
+
+
 @router.get("/admin/audit-members")
 def audit_members(db: Session = Depends(get_db)):
     """Read-only audit of the member table using same_person() detection.
